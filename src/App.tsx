@@ -115,6 +115,11 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
   return out;
 }
 
+/** 권장 턴 수: 웨이브마다 필드 3기씩 정리하는 턴 수와 브레이크 게이지 줄 수 중 큰 쪽 */
+function suggestTurns(q: QuestData): number {
+  return q.waves.reduce((n, w) => n + Math.max(Math.ceil(w.length / 3), ...w.map((e) => e.bars.length)), 0);
+}
+
 function PartyTab({ data, roster, stock, prefs, setPrefs }: {
   data: Data; roster: Roster; stock: Stock; prefs: Prefs; setPrefs: (v: Prefs | ((p: Prefs) => Prefs)) => void;
 }) {
@@ -135,7 +140,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     try {
       const q = await fetchQuest(c.quest.id, c.phase, data.names, c.label);
       setQuest(q);
-      const minTurns = q.waves.reduce((n, w) => n + Math.ceil(w.length / 3), 0);
+      const minTurns = suggestTurns(q);
       if (minTurns) set('maxTurns', Math.max(minTurns, 1));
     } catch (e) { setErr(String(e)); }
     setLoading(false);
@@ -157,7 +162,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       else if (ev.data.type === 'done') { setOutput(ev.data.output); setProgress(null); w.terminate(); }
       else { setErr(ev.data.message); setProgress(null); w.terminate(); }
     };
-    const ceStock: CEStock[] = data.ces.map((ce) => ({ ce, count: stock[ce.no]?.count ?? 1, mlb: stock[ce.no]?.mlb ?? true }));
+    const ceStock: CEStock[] = data.ces.map((ce) => ({ ce, count: stock[ce.no]?.count ?? 1, mlb: stock[ce.no]?.mlb ?? true, atk: stock[ce.no]?.atk ?? ce.atk }));
     const [fNo, fMlb] = prefs.friendCe.split(':');
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
@@ -169,7 +174,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
   useEffect(() => () => worker.current?.terminate(), []);
 
   const ownedCount = useMemo(() => Object.values(roster).filter((r) => r.owned).length, [roster]);
-  const minTurns = quest ? quest.waves.reduce((n, w) => n + Math.ceil(w.length / 3), 0) : 0;
+  const minTurns = quest ? suggestTurns(quest) : 0;
 
   return (
     <main>
@@ -233,7 +238,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               <option value="owned">내 보유 서번트만 ({ownedCount}기)</option>
             </select>
           </label>
-          <label>턴 제한{minTurns ? ` (보구만으로 최소 ${minTurns}턴)` : ''}
+          <label>턴 제한{minTurns ? ` (권장 ${minTurns}턴 이상)` : ''}
             <input type="number" min={1} max={15} value={prefs.maxTurns} onChange={(e) => set('maxTurns', Number(e.target.value) || 1)} />
           </label>
           <label>파티 코스트 상한
@@ -301,7 +306,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           {!output.results.length && (
             <div className="warn">
               <p>인연 예장만 끼고 {prefs.maxTurns}턴 안에 보구로 정리할 수 있는 조합을 찾지 못했습니다. 턴 제한을 늘려 보세요.</p>
-              {output.bestFail && <p>가장 근접한 조합: {output.bestFail.names.join(' + ')} — 적 {output.bestFail.sim.total}기 중 {output.bestFail.sim.killed}기 처치</p>}
+              {output.bestFail && <p>가장 근접한 조합: {output.bestFail.names.join(' + ')} — 적 {output.bestFail.sim.total}기 중 {output.bestFail.sim.killed}기 처치{output.bestFail.sim.bars > output.bestFail.sim.total ? `, HP 게이지 ${output.bestFail.sim.bars}줄 중 ${output.bestFail.sim.broken}줄 파괴` : ''}</p>}
             </div>
           )}
           {output.results.map((r, i) => <Result key={i} r={r} rank={i + 1} base={quest.bond} />)}
@@ -346,13 +351,17 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
       <div className="line ces">
         <span className="tag">예장</span>
         {r.ces.map((c, k) => (
-          <span key={k} className="ce">{c.ce.name}{c.ce.rarity === 5 ? (c.mlb ? ' (최대해방)' : ' (미해방)') : ''}</span>
+          <span key={k} className={`ce ${r.atkCe?.ce.no === c.ce.no && k === 0 ? 'need' : ''}`}>{c.ce.name}{c.ce.rarity === 5 ? (c.mlb ? ' (최대해방)' : ' (미해방)') : ''}{r.atkCe?.ce.no === c.ce.no && k === 0 ? ` → ${r.atkCe.dealer}` : ''}</span>
         ))}
         {r.friendCe && <span className="ce friend">프렌드: {r.friendCe.name}</span>}
       </div>
       {open && (
         <div className="log">
-          <p className="small muted">예장은 누가 껴도 효과가 같습니다(파티 전체 적용). 스킬 순서는 시뮬레이터가 고른 한 가지 예시입니다.</p>
+          <p className="small muted">
+            예장의 인연 효과는 누가 껴도 같습니다(파티 전체 적용).
+            {r.atkCe ? ` 단, "${r.atkCe.ce.name}" 예장은 ${r.atkCe.dealer}에게 끼우세요. 이 예장의 ATK +${r.atkCe.atk.toLocaleString()}까지 더해야 클리어됩니다.` : ' ATK가 붙은 예장은 딜러에게 끼우면 여유가 생깁니다.'}
+            {' '}스킬 순서는 시뮬레이터가 고른 한 가지 예시입니다.
+          </p>
           {r.sim.log.map((t) => (
             <div key={t.turn} className="turn">
               <b>{t.turn}턴</b> <span className="muted small">({t.wave}웨이브)</span>
@@ -498,11 +507,12 @@ function CETab({ data, stock, setStock }: { data: Data; stock: Stock; setStock: 
             <h3>{title}</h3>
             <div className="celist">
               {list.map((c) => {
-                const s = stock[c.no] ?? { count: 1, mlb: true };
+                const s: Stock[number] = stock[c.no] ?? { count: 1, mlb: true };
+                const ceAtk = s.atk ?? c.atk;
                 return (
                   <div key={c.no} className="cerow">
                     <Face src={c.face} name={c.name} />
-                    <span className="grow">{c.name} <span className="muted small">★{c.rarity} · 코스트 {c.cost} · {desc(c, s.mlb)}</span></span>
+                    <span className="grow">{c.name} <span className="muted small">★{c.rarity} · 코스트 {c.cost} · {desc(c, s.mlb)}{ceAtk ? ` · ATK +${ceAtk.toLocaleString()}` : ''}</span></span>
                     <label className="small">보유 <input type="number" min={0} max={5} value={s.count} onChange={(e) => upd(c.no, { count: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} /></label>
                     {c.val[0] !== c.val[1] && <label className="check small"><input type="checkbox" checked={s.mlb} onChange={(e) => upd(c.no, { mlb: e.target.checked })} /> 최대해방</label>}
                   </div>

@@ -7,7 +7,7 @@ export interface PoolEntry {
   /** 스킬별 레벨, 서번트별 시작 NP(없으면 공통 설정) */
   skillLvs?: number[]; startNp?: number;
 }
-export interface CEStock { ce: BondCE; count: number; mlb: boolean }
+export interface CEStock { ce: BondCE; count: number; mlb: boolean; /** 보유한 예장의 실제 ATK(없으면 최대 레벨 기준) */ atk?: number }
 export interface Settings {
   maxTurns: number; costCap: number; roll: number; startNp: number;
   friendCe: { no: number; mlb: boolean } | null; topN: number;
@@ -24,6 +24,8 @@ export interface Member { svt: Servant; friend: boolean; role: 'dealer' | 'suppo
 export interface PartyResult {
   turns: number; front: Member[]; back: Member[]; ces: { ce: BondCE; mlb: boolean }[];
   friendCe: BondCE | null; total: number; cost: number; sim: SimResult;
+  /** 이 예장을 표시된 딜러에게 끼워야 클리어된다(예장 ATK가 필요한 편성) */
+  atkCe?: { ce: BondCE; atk: number; dealer: string };
 }
 export interface SearchOutput { results: PartyResult[]; simulated: number; feasible: number; bestFail: { names: string[]; sim: SimResult } | null }
 
@@ -40,8 +42,15 @@ export function search(
 ): SearchOutput {
   const byNo = new Map(pool.map((p) => [p.svt.no, p]));
   const allByNo = new Map(all.map((s) => [s.no, s]));
-  const cfg = (p: PoolEntry, role: 'dealer' | 'support'): ActorCfg =>
-    ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk, startNp: p.startNp ?? st.startNp, role });
+  const cfg = (p: PoolEntry, role: 'dealer' | 'support', plusAtk = 0): ActorCfg =>
+    ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk + plusAtk, startNp: p.startNp ?? st.startNp, role });
+  // 예장 ATK: 보유한 인연 예장 중 ATK가 가장 높은 것을 주 딜러에게 끼운다고 본다.
+  // 예장 없이도 클리어되는 편성은 그대로 두고, 안 되는 편성만 이 예장을 낀 조건으로 다시 계산한다.
+  const ceAtkOf = (s: CEStock) => s.atk ?? s.ce.atk;
+  const atkStock = stock.filter((s) => s.count > 0 && ceAtkOf(s) > 0)
+    .sort((a, b) => ceAtkOf(b) - ceAtkOf(a) || b.ce.val[b.mlb ? 1 : 0] - a.ce.val[a.mlb ? 1 : 0])[0] ?? null;
+  const plusAtk = atkStock ? ceAtkOf(atkStock) : 0;
+  const coresAtk: Core[] = [];
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
     ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp, role, friend: true });
   const extra = { mc: st.mc, cardNp: st.cardNp };
@@ -57,7 +66,7 @@ export function search(
   const cores: Core[] = [];
   let simulated = 0;
   let bestFail: SearchOutput['bestFail'] = null;
-  const noteFail = (names: string[], sim: SimResult) => { if (!bestFail || sim.killed > bestFail.sim.killed) bestFail = { names, sim }; };
+  const noteFail = (names: string[], sim: SimResult) => { if (!bestFail || sim.broken > bestFail.sim.broken) bestFail = { names, sim }; };
   const total = dealers.length * combos.length;
   let done = 0;
 
@@ -79,34 +88,39 @@ export function search(
     return out;
   };
 
-  const tryCores = (ds: PoolEntry[], combo: number[]): boolean => {
+  /** 반환: 0 = 실패, 1 = 그대로 클리어, 2 = 예장 ATK를 더해야 클리어 */
+  const tryCores = (ds: PoolEntry[], combo: number[]): number => {
     const dNos = ds.map((d) => d.svt.no);
     const vs = variants(combo, dNos);
-    if (!vs.length) return false;
+    if (!vs.length) return 0;
     // 전투 결과는 누가 프렌드든 같다고 보고(프렌드는 풀스펙 가정) 한 번만 시뮬레이션
     const v0 = vs[vs.length - 1];
-    const front = [...ds.map((d) => cfg(d, 'dealer')), ...v0.own.map((p) => cfg(p, 'support')), ...(v0.friend ? [friendCfg(v0.friend)] : [])];
-    const sim = sim1(front);
+    const mkFront = (plus: number) => [...ds.map((d, i) => cfg(d, 'dealer', i === 0 ? plus : 0)), ...v0.own.map((p) => cfg(p, 'support')), ...(v0.friend ? [friendCfg(v0.friend)] : [])];
+    let sim = sim1(mkFront(0));
     simulated++;
-    if (!sim.cleared) { noteFail(front.map((f) => f.svt.name), sim); return false; }
+    let target = cores;
+    if (!sim.cleared && plusAtk) { sim = sim1(mkFront(plusAtk)); simulated++; target = coresAtk; }
+    if (!sim.cleared) { noteFail(mkFront(0).map((f) => f.svt.name), sim); return 0; }
     for (const v of vs) {
       const roles = new Map<number, 'dealer' | 'support'>();
       for (const d of ds) roles.set(d.svt.no, 'dealer');
       for (const p of v.own) roles.set(p.svt.no, 'support');
-      cores.push({ own: [...ds, ...v.own], friend: v.friend, roles, sim });
+      target.push({ own: [...ds, ...v.own], friend: v.friend, roles, sim });
     }
-    return true;
+    return target === cores ? 1 : 2;
   };
 
   /** 프렌드로 같은 딜러를 빌려 보구를 번갈아 쓰는 편성(프렌드 보구 레벨은 1로 가정) */
   const tryFriendDealer = (d: PoolEntry, sup: PoolEntry | null): boolean => {
-    const front = [cfg(d, 'dealer'), friendCfg(d.svt, 'dealer'), ...(sup ? [cfg(sup, 'support')] : [])];
-    const sim = sim1(front);
+    const mkFront = (plus: number) => [cfg(d, 'dealer', plus), friendCfg(d.svt, 'dealer'), ...(sup ? [cfg(sup, 'support')] : [])];
+    let sim = sim1(mkFront(0));
     simulated++;
-    if (!sim.cleared) { noteFail(front.map((f) => f.svt.name), sim); return false; }
+    let target = cores;
+    if (!sim.cleared && plusAtk) { sim = sim1(mkFront(plusAtk)); simulated++; target = coresAtk; }
+    if (!sim.cleared) { noteFail(mkFront(0).map((f) => f.svt.name), sim); return false; }
     const roles = new Map<number, 'dealer' | 'support'>([[d.svt.no, 'dealer']]);
     if (sup) roles.set(sup.svt.no, 'support');
-    cores.push({ own: sup ? [d, sup] : [d], friend: d.svt, friendRole: 'dealer', roles, sim });
+    target.push({ own: sup ? [d, sup] : [d], friend: d.svt, friendRole: 'dealer', roles, sim });
     return true;
   };
 
@@ -118,8 +132,9 @@ export function search(
       done++;
       if (solo || combo.includes(d.svt.no)) continue;
       if (combo.some((n) => okSingles.has(n))) continue; // 더 작은 조합으로 이미 클리어 가능
-      if (tryCores([d], combo)) {
-        plain++;
+      const got = tryCores([d], combo);
+      if (got) {
+        if (got === 1) plain++;
         if (combo.length === 0) solo = true;
         else if (combo.length === 1) okSingles.add(combo[0]);
       }
@@ -139,14 +154,25 @@ export function search(
     for (let i = 0; i < top.length; i++) for (let j = i + 1; j < top.length; j++) {
       for (const c of single) if (tryCores([top[i], top[j]], c) && c.length === 0) break;
     }
-    if (!plain && cores.every((c) => c.friendRole === 'dealer')) {
+    if (!plain && [...cores, ...coresAtk].every((c) => c.friendRole === 'dealer')) {
       const t3 = top.slice(0, 9);
       for (let i = 0; i < t3.length; i++) for (let j = i + 1; j < t3.length; j++) for (let k = j + 1; k < t3.length; k++) tryCores([t3[i], t3[j], t3[k]], []);
     }
   }
 
-  const results = optimizeBond(cores, pool, stock, quest, st);
-  return { results, simulated, feasible: cores.length, bestFail: cores.length ? null : bestFail };
+  // 예장 ATK가 필요한 편성은 그 예장을 반드시 포함하는 조건으로 인연을 따로 최적화한다
+  const all2 = [...optimizeBond(cores, pool, stock, quest, st, null), ...(atkStock ? optimizeBond(coresAtk, pool, stock, quest, st, atkStock) : [])];
+  all2.sort((a, b) => b.total - a.total || a.turns - b.turns || Number(!!a.atkCe) - Number(!!b.atkCe) || a.cost - b.cost);
+  // 멤버 구성이 완전히 같은 결과는 하나만
+  const seen = new Set<string>();
+  const results = all2.filter((r) => {
+    const k = [...r.front, ...r.back].filter((m) => m.svt).map((m) => m.svt.no + (m.friend ? 'f' : '')).sort().join(',') + '|' + r.ces.map((c) => c.ce.no).sort().join(',');
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0, st.topN);
+  const feasible = cores.length + coresAtk.length;
+  return { results, simulated, feasible, bestFail: feasible ? null : bestFail };
 }
 
 // ---------------------------------------------------------------- 인연 포인트 최적화
@@ -172,12 +198,19 @@ export function bondFor(base: number, front: number, pct: number, flat: number):
 interface UniItem { ce: BondCE; mlb: boolean; cost: number; g: number; pct: number; flat: number }
 interface Node { item: UniItem; prev: Node | null; pct: number; flat: number }
 
-function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest: QuestData, st: Settings): PartyResult[] {
+/** forced: 반드시 포함할 예장(주 딜러에게 끼우는 ATK 예장). 예장 칸 하나와 코스트를 미리 차지한다. */
+function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest: QuestData, st: Settings, forced: CEStock | null): PartyResult[] {
   if (!cores.length) return [];
   const base = quest.bond;
-  const cap = st.costCap;
-  const SLOTS = 5;
+  const cap = st.costCap - (forced ? forced.ce.cost : 0);
+  if (cap < 0) return [];
+  const SLOTS = 5;                       // 내 서번트 자리
+  const CE_SLOTS = 5 - (forced ? 1 : 0); // 자유롭게 고를 수 있는 예장 칸
   const pctOf = (s: CEStock) => s.ce.val[s.mlb ? 1 : 0];
+  const xVal = forced ? pctOf(forced) : 0;
+  const xCondFor = (traits: number[]) => (forced && forced.ce.kind === 'pct' && forced.ce.cond.length && condMatch(forced.ce.cond, traits) ? xVal : 0);
+  const xUni = forced && forced.ce.kind === 'pct' && !forced.ce.cond.length ? xVal : 0;
+  const xFlat = forced && forced.ce.kind === 'flat' ? xVal : 0;
 
   // 프렌드 예장: 슬롯·코스트를 쓰지 않고 효과만 더해진다
   const fStock = st.friendCe ? stock.find((s) => s.ce.no === st.friendCe!.no) : undefined;
@@ -192,8 +225,9 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
   const condTypes: CondType[] = [];
   const uni: UniItem[] = [];
   for (const s of stock) {
-    if (s.count <= 0) continue;
-    const n = Math.min(s.count, SLOTS);
+    const have = s.count - (forced && s.ce.no === forced.ce.no ? 1 : 0);
+    if (have <= 0) continue;
+    const n = Math.min(have, CE_SLOTS);
     if (s.ce.kind === 'pct' && s.ce.cond.length) {
       const key = JSON.stringify(s.ce.cond);
       let t = condTypes.find((x) => JSON.stringify(x.cond) === key);
@@ -209,9 +243,9 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
 
   // 조건 없는 예장: 슬롯 j개, 코스트 c 이하에서 얻는 서번트 1기당 최대 이득
   const dp: number[][] = [], pick: (Node | null)[][] = [];
-  for (let j = 0; j <= SLOTS; j++) { dp.push(new Array(cap + 1).fill(j === 0 ? 0 : -1)); pick.push(new Array(cap + 1).fill(null)); }
+  for (let j = 0; j <= CE_SLOTS; j++) { dp.push(new Array(cap + 1).fill(j === 0 ? 0 : -1)); pick.push(new Array(cap + 1).fill(null)); }
   for (const it of uni) {
-    for (let j = SLOTS; j >= 1; j--) for (let c = cap; c >= it.cost; c--) {
+    for (let j = CE_SLOTS; j >= 1; j--) for (let c = cap; c >= it.cost; c--) {
       const prev = dp[j - 1][c - it.cost];
       if (prev >= 0 && prev + it.g > dp[j][c]) {
         const pn = pick[j - 1][c - it.cost];
@@ -236,8 +270,11 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
   const match = pool.map((p) => condTypes.map((t) => condMatch(t.cond, p.svt.traits)));
   const idx = new Map(pool.map((p, i) => [p.svt.no, i]));
   const is15 = pool.map((p) => (p.bond15 ? 1 : 0));
-  const fCond = pool.map((p) => friendPctFor(p.svt.traits));
-  const fUniPct = fCe && fCe.kind === 'pct' && !fCe.cond.length ? fPct : 0;
+  // 슬롯을 쓰지 않고 더해지는 효과: 프렌드 예장 + 반드시 포함하는 예장
+  const extraCondFor = (traits: number[]) => (fCe && fCe.cond.length ? friendPctFor(traits) : 0) + xCondFor(traits);
+  const fCond = pool.map((p) => extraCondFor(p.svt.traits));
+  const fUniPct = (fCe && fCe.kind === 'pct' && !fCe.cond.length ? fPct : 0) + xUni;
+  const extraFlat = fFlat + xFlat;
 
   // 코어는 보유 멤버 구성이 같으면 턴 수가 적은 것만 남긴다
   const uniq = new Map<string, Core>();
@@ -262,13 +299,14 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     let cc = 0;
     const typePct = condTypes.map((t, i) => { let s = 0; for (let k = 0; k < vec[i]; k++) { s += t.copies[k].pct; cc += t.copies[k].cost; } return s; });
     if (cc > cap) return;
-    const condPct = pool.map((_, i) => { let s = fCe && fCe.cond.length ? fCond[i] : 0; for (let t = 0; t < condTypes.length; t++) if (match[i][t]) s += typePct[t]; return s; });
+    const condPct = pool.map((_, i) => { let s = fCond[i]; for (let t = 0; t < condTypes.length; t++) if (match[i][t]) s += typePct[t]; return s; });
     // 코스트별 후보(조건 일치율 높은 순) + 인연이 필요 없는 저코스트 서번트
     const classes: number[][] = costs.map((c) =>
       pool.map((_, i) => i).filter((i) => pool[i].weight > 0 && pool[i].svt.cost === c).sort((a, b) => condPct[b] - condPct[a]).slice(0, 9));
     const zero = pool.map((_, i) => i).filter((i) => pool[i].weight <= 0).sort((a, b) => is15[b] - is15[a] || pool[a].svt.cost - pool[b].svt.cost).slice(0, 9);
     if (zero.length) classes.push(zero);
-    const r = SLOTS - used;
+    const r = CE_SLOTS - used;
+    if (r < 0) return;
 
     for (const core of coreList) {
       const ownIdx = core.own.map((p) => idx.get(p.svt.no)!);
@@ -296,7 +334,7 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
             const wi = pool[i].weight, mul = k < frontFree ? coreMul : backMul;
             w += wi; a += wi * mul; c += wi * mul * condPct[i];
           });
-          const uPct = (u.node?.pct ?? 0) + fUniPct + BOND15 * n15, uFlat = (u.node?.flat ?? 0) + fFlat;
+          const uPct = (u.node?.pct ?? 0) + fUniPct + BOND15 * n15, uFlat = (u.node?.flat ?? 0) + extraFlat;
           const value = base * (a * (1 + uPct / 1000) + c / 1000) + w * uFlat;
           const cur = bests.get(core);
           if (!cur || value > cur.value) bests.set(core, { value, core, vec: vec.slice(), fillers: chosen.slice(), uni: u.node });
@@ -323,7 +361,7 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     for (let n = 0; n <= Math.min(slots, condTypes[t].copies.length); n++) { vec[t] = n; enumVec(t + 1, slots - n); }
     vec[t] = 0;
   };
-  enumVec(0, SLOTS);
+  enumVec(0, CE_SLOTS);
 
   // 정확한 수치(내림 포함)로 다시 계산해 결과를 만든다
   const out: PartyResult[] = [];
@@ -332,13 +370,13 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     b.vec.forEach((n, t) => { for (let k = 0; k < n; k++) ces.push({ ce: condTypes[t].copies[k].ce, mlb: condTypes[t].copies[k].mlb }); });
     for (let n = b.uni; n; n = n.prev) ces.push({ ce: n.item.ce, mlb: n.item.mlb });
     const n15 = b.core.own.filter((p) => p.bond15).length + b.fillers.filter((i) => pool[i].bond15).length;
-    let flat = fFlat, uPct = fUniPct + BOND15 * n15;
+    let flat = extraFlat, uPct = fUniPct + BOND15 * n15;
     for (const c of ces) {
       const v = c.ce.val[c.mlb ? 1 : 0];
       if (c.ce.kind === 'flat') flat += v; else if (!c.ce.cond.length) uPct += v;
     }
     const pctFor = (traits: number[]) => {
-      let p = uPct + (fCe && fCe.cond.length ? friendPctFor(traits) : 0);
+      let p = uPct + extraCondFor(traits);
       for (const c of ces) if (c.ce.kind === 'pct' && c.ce.cond.length && condMatch(c.ce.cond, traits)) p += c.ce.val[c.mlb ? 1 : 0];
       return p;
     };
@@ -358,19 +396,14 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     fillers.forEach((f, k) => (k < frontFree ? front : back).push(f));
     if (!friend) back.push({ svt: null as unknown as Servant, friend: true, role: 'filler', bond: 0, counted: false });
     const own = [...coreMembers, ...fillers];
+    // 반드시 포함하는 예장은 효과를 위에서 이미 더했으므로 목록에만 추가한다
+    const allCes = forced ? [{ ce: forced.ce, mlb: forced.mlb }, ...ces] : ces;
     out.push({
-      turns: b.core.sim.turns, front, back, ces, friendCe: fCe, sim: b.core.sim,
+      turns: b.core.sim.turns, front, back, ces: allCes, friendCe: fCe, sim: b.core.sim,
       total: own.reduce((s, m) => s + (m.counted ? m.bond : 0), 0),
-      cost: own.reduce((s, m) => s + m.svt.cost, 0) + ces.reduce((s, c) => s + c.ce.cost, 0),
+      cost: own.reduce((s, m) => s + m.svt.cost, 0) + allCes.reduce((s, c) => s + c.ce.cost, 0),
+      atkCe: forced ? { ce: forced.ce, atk: forced.atk ?? forced.ce.atk, dealer: b.core.own[0].svt.name } : undefined,
     });
   }
-  out.sort((a, b) => b.total - a.total || a.turns - b.turns || a.cost - b.cost);
-  // 멤버 구성이 완전히 같은 결과는 하나만
-  const seen = new Set<string>();
-  return out.filter((r) => {
-    const k = [...r.front, ...r.back].filter((m) => m.svt).map((m) => m.svt.no + (m.friend ? 'f' : '')).sort().join(',') + '|' + r.ces.map((c) => c.ce.no).sort().join(',');
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  }).slice(0, st.topN);
+  return out;
 }

@@ -166,6 +166,7 @@ for (const c of load('ce.json')) {
     val: [flat ? base.sv.AddCount : base.sv.RateCount, flat ? mlb.sv.AddCount : mlb.sv.RateCount],
     cond,
     sup: SUPPORT_PCT[c.collectionNo] || null,
+    atk: c.atkMax || 0,
     face: c.extraAssets?.faces?.equip?.[c.id] || '',
   });
 }

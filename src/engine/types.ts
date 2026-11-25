@@ -17,6 +17,8 @@ export interface Servant {
 export interface BondCE {
   id: number; no: number; name: string; rarity: number; cost: number; kind: 'pct' | 'flat';
   val: [number, number]; cond: number[][]; sup: [number, number] | null; face: string;
+  /** 최대 레벨일 때의 ATK */
+  atk: number;
 }
 export interface QuestRef {
   id: number; type: 'main' | 'free'; name: string; spot: string; chapter: number; sub: number;
@@ -61,4 +63,8 @@ export interface TurnLog {
   skills: { who: string; skill: string; target?: string }[];
   nps: { who: string; np: string; hits: { enemy: string; dmg: number; hp: number; kill: boolean }[]; refund: number }[];
 }
-export interface SimResult { cleared: boolean; turns: number; killed: number; total: number; log: TurnLog[] }
+export interface SimResult {
+  cleared: boolean; turns: number; killed: number; total: number; log: TurnLog[];
+  /** 깎아 낸 HP 게이지 수 / 전체 게이지 수(브레이크 포함) */
+  broken: number; bars: number;
+}

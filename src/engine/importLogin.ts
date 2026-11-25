@@ -18,7 +18,7 @@ export interface RosterEntry {
   level?: number; bond?: number;
 }
 export type Roster = Record<number, RosterEntry>;
-export type Stock = Record<number, { count: number; mlb: boolean }>;
+export type Stock = Record<number, { count: number; mlb: boolean; atk?: number }>;
 
 export interface LoginImport {
   roster: Roster; stock: Stock; costCap: number | null;
@@ -57,6 +57,7 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
   const ceById = new Map(ces.map((c) => [c.id, c]));
   const best = new Map<number, UserSvt>();
   const ceLimits = new Map<number, number[]>();
+  const ceAtk = new Map<number, number>(); // 예장별 가장 높은 ATK(예장 레벨에 따라 다르다)
   let unknown = 0;
   // 같은 서번트가 여러 기면 가장 많이 키운 쪽을 쓴다
   const score = (u: UserSvt) => u.lv * 1000 + u.treasureDeviceLv1 * 100 + u.skillLv1 + u.skillLv2 + u.skillLv3;
@@ -68,6 +69,7 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
     } else if (ceById.has(u.svtId)) {
       const ce = ceById.get(u.svtId)!;
       ceLimits.set(ce.no, [...(ceLimits.get(ce.no) ?? []), u.limitCount]);
+      ceAtk.set(ce.no, Math.max(ceAtk.get(ce.no) ?? 0, u.atk ?? 0));
     } else unknown++;
   }
 
@@ -94,7 +96,7 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
   for (const ce of ces) {
     const limits = ceLimits.get(ce.no) ?? [];
     const mlb = limits.filter((l) => l >= 4).length;
-    stock[ce.no] = mlb ? { count: mlb, mlb: true } : { count: limits.length, mlb: false };
+    stock[ce.no] = { ...(mlb ? { count: mlb, mlb: true } : { count: limits.length, mlb: false }), atk: ceAtk.get(ce.no) ?? 0 };
     ceCopies += limits.length;
   }
   const costMax = tables.userGame?.[0]?.costMax;

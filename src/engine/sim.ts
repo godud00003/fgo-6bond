@@ -14,7 +14,7 @@ interface Actor { cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[]; fir
 interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean; summoned?: boolean }
 interface State {
   actors: Actor[]; field: Enemy[]; reserve: Enemy[]; wave: number; quest: QuestData;
-  rel: Rel; roll: number; killed: number;
+  rel: Rel; roll: number; killed: number; broken: number;
   /** 마술예장 스킬을 쓰는 가상의 행동 주체(전투에는 참가하지 않는다) */
   master: Actor | null;
   cardNp: number;
@@ -202,6 +202,7 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
         let kill = false;
         if (dmg >= before) {
           e.bars.shift();
+          if (!e.summoned) s.broken++;
           if (!e.bars.length) { e.dead = true; kill = true; if (!e.summoned) s.killed++; }
         } else e.bars[0] -= dmg;
         entry.hits.push({ enemy: e.def.name, dmg, hp: before, kill });
@@ -339,21 +340,22 @@ function masterActor(skills: Skill[]): Actor {
 export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimOptions): SimResult {
   const s: State = {
     actors: front.map((cfg) => ({ cfg, gauge: cfg.startNp, buffs: [], cd: cfg.svt.skills.map(() => 0), fired: false })),
-    field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0,
+    field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
     master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0,
   };
   for (const a of s.actors) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   const total = quest.waves.reduce((n, w) => n + w.length, 0);
   const log: TurnLog[] = [];
-  if (!total) return { cleared: false, turns: 0, killed: 0, total, log };
+  const bars = quest.waves.reduce((n, w) => n + w.reduce((m, e) => m + e.bars.length, 0), 0);
+  if (!total) return { cleared: false, turns: 0, killed: 0, total, log, broken: 0, bars };
   loadWave(s);
   for (let turn = 1; turn <= opt.maxTurns; turn++) {
     const entry: TurnLog = { turn, wave: s.wave + 1, skills: [], nps: [] };
     playTurn(s, opt.mode, entry);
     log.push(entry);
-    if (endTurn(s)) return { cleared: true, turns: turn, killed: s.killed, total, log };
+    if (endTurn(s)) return { cleared: true, turns: turn, killed: s.killed, total, log, broken: s.broken, bars };
   }
-  return { cleared: false, turns: opt.maxTurns, killed: s.killed, total, log };
+  return { cleared: false, turns: opt.maxTurns, killed: s.killed, total, log, broken: s.broken, bars };
 }
 
 /** 두 가지 스킬 운용 방침을 모두 돌려 더 나은 결과를 고른다. */
@@ -363,5 +365,5 @@ export function simulateBest(front: ActorCfg[], quest: QuestData, rel: Rel, maxT
   const b = simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'eager' });
   if (a.cleared !== b.cleared) return a.cleared ? a : b;
   if (a.cleared) return b.turns < a.turns ? b : a;
-  return b.killed > a.killed ? b : a;
+  return b.broken > a.broken ? b : a;
 }

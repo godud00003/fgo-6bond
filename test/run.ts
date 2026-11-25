@@ -46,7 +46,7 @@ if (p) for (const t of p.sim.log) {
   console.log(` T${t.turn} W${t.wave}`, t.skills.map((s) => `${s.who}:${s.skill}${s.target ? '→' + s.target : ''}`).join(', '));
   for (const n of t.nps) console.log('    ', n.who, n.np, n.hits.map((h) => `${h.enemy} ${h.dmg}/${h.hp}${h.kill ? '✔' : ''}`).join(' '), 'refund', n.refund / 100);
 }
-if (out.bestFail) console.log('best fail', out.bestFail.names, out.bestFail.sim.killed, '/', out.bestFail.sim.total);
+if (out.bestFail) console.log('best fail', out.bestFail.names, out.bestFail.sim.killed, '/', out.bestFail.sim.total, '| 게이지', out.bestFail.sim.broken, '/', out.bestFail.sim.bars);
 
 // 기준 검증: 캐스토리아 2 + 아츠 광역 딜러
 if (process.argv[5]) {
