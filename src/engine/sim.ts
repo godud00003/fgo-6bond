@@ -89,7 +89,8 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
   const v = sv.Value ?? 0;
   if (fn.t === 'gainNp') for (const a of allies) a.gauge = Math.min(30000, a.gauge + v);
   else if (fn.t === 'lossNp') for (const a of allies) a.gauge = Math.max(0, a.gauge - v);
-  else if (fn.t === 'shortenSkill') for (const a of allies) a.cd = a.cd.map((c) => Math.max(0, c - v));
+  // 쿨타임 단축: Value2가 있으면 그 번호의 스킬만 줄인다(예: 토네리코 보구는 3스킬만)
+  else if (fn.t === 'shortenSkill') for (const a of allies) a.cd = a.cd.map((c, i) => (sv.Value2 && sv.Value2 - 1 !== i ? c : Math.max(0, c - v)));
   else if (fn.b) {
     for (const d of fn.b) {
       const mk = (): Buff => ({ t: d.t, val: v, turn: sv.Turn ?? -1, count: sv.Count ?? -1, d });
