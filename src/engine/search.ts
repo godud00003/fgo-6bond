@@ -120,16 +120,16 @@ export function search(
   };
 
   /** 프렌드로 같은 딜러를 빌려 보구를 번갈아 쓰는 편성(프렌드 보구 레벨은 1로 가정) */
-  const tryFriendDealer = (d: PoolEntry, sup: PoolEntry | null): boolean => {
+  const tryFriendDealer = (d: PoolEntry, sup: PoolEntry | null, supRole: 'dealer' | 'support' = 'support'): boolean => {
     if (!allowDup) return false;
-    const mkFront = (plus: number) => [cfg(d, 'dealer', plus), friendCfg(d.svt, 'dealer'), ...(sup ? [cfg(sup, 'support')] : [])];
+    const mkFront = (plus: number) => [cfg(d, 'dealer', plus), friendCfg(d.svt, 'dealer'), ...(sup ? [cfg(sup, supRole)] : [])];
     let sim = sim1(mkFront(0));
     simulated++;
     let target = cores;
     if (!sim.cleared && plusAtk) { sim = sim1(mkFront(plusAtk)); simulated++; target = coresAtk; }
     if (!sim.cleared) { noteFail(mkFront(0).map((f) => f.svt.name), sim); return false; }
     const roles = new Map<number, 'dealer' | 'support'>([[d.svt.no, 'dealer']]);
-    if (sup) roles.set(sup.svt.no, 'support');
+    if (sup) roles.set(sup.svt.no, supRole);
     target.push({ own: sup ? [d, sup] : [d], friend: d.svt, friendRole: 'dealer', roles, sim });
     return true;
   };
@@ -160,14 +160,22 @@ export function search(
     const solo = dealers.map((d) => ({ d, sim: sim1([cfg(d, 'dealer')]) }));
     const dmg = (s: SimResult) => s.log.reduce((n, t) => n + t.nps.reduce((m, x) => m + x.hits.reduce((k, h) => k + Math.min(h.dmg, h.hp), 0), 0), 0);
     const top = solo.map((x) => ({ d: x.d, score: dmg(x.sim) })).sort((a, b) => b.score - a.score).slice(0, 14).map((x) => x.d);
+    // 마지막 웨이브(보스) 담당 후보: 보구를 바로 쓸 수 있다고 치고 마지막 웨이브에 준 대미지가 큰 딜러.
+    // 위 순위는 광역 딜러에 치우치므로, 단일 보스를 맡을 딜러를 따로 뽑아 합친다.
+    const lastQuest: QuestData = { ...quest, waves: [quest.waves[quest.waves.length - 1]], waveCalls: undefined };
+    const finishers = dealers
+      .map((d) => ({ d, score: dmg(simulateBest([{ ...cfg(d, 'dealer'), startNp: 10000 }], lastQuest, rel, 1, st.roll, extra)) }))
+      .sort((a, b) => b.score - a.score).slice(0, 8).map((x) => x.d);
+    for (const d of finishers) if (!top.includes(d)) top.push(d);
     const single = combos.filter((c) => c.length <= 1);
     for (let i = 0; i < top.length; i++) for (let j = i + 1; j < top.length; j++) {
       for (const c of single) if (tryCores([top[i], top[j]], c) && c.length === 0) break;
     }
-    if (!plain && [...cores, ...coresAtk].every((c) => c.friendRole === 'dealer')) {
-      const t3 = top.slice(0, 9);
-      for (let i = 0; i < t3.length; i++) for (let j = i + 1; j < t3.length; j++) for (let k = j + 1; k < t3.length; k++) tryCores([t3[i], t3[j], t3[k]], []);
-    }
+    // 같은 딜러 2기(내 것 + 프렌드)에 다른 딜러 1기를 더한 편성
+    for (const d of top) for (const d2 of top) if (d2 !== d) tryFriendDealer(d, d2, 'dealer');
+    // 내 딜러 3기
+    const t3 = top.slice(0, 12);
+    for (let i = 0; i < t3.length; i++) for (let j = i + 1; j < t3.length; j++) for (let k = j + 1; k < t3.length; k++) tryCores([t3[i], t3[j], t3[k]], []);
   }
 
   // 예장 ATK가 필요한 편성은 그 예장을 반드시 포함하는 조건으로 인연을 따로 최적화한다

@@ -142,6 +142,9 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
     if (wave.length) { waves.push(wave); waveCalls.push(stageCall); }
   }
   if (!waves.length) warnings.push('이 전투는 Atlas Academy에 적 데이터가 없습니다.');
+  if (/랜덤|ランダム/.test(`${title ?? ''}${raw.name ?? ''}`)) {
+    warnings.push('이 퀘스트는 적 클래스가 판마다 바뀝니다. 아래는 데이터에 기록된 한 가지 구성이라, 실제 판과 상성이 다를 수 있습니다.');
+  }
   return {
     id: raw.id, phase: raw.phase, name: title || raw.name, bond: raw.bond ?? 0, ap: raw.consume ?? 0,
     fieldTraits: (raw.individuality || []).map((t: any) => t.id), waves, warnings,

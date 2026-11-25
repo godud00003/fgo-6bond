@@ -313,7 +313,13 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           {output.note && <div className="warn"><p>{output.note}</p></div>}
           {!output.results.length && !output.note && (
             <div className="warn">
-              <p>인연 예장만 끼고 {prefs.maxTurns}턴 안에 보구로 정리할 수 있는 조합을 찾지 못했습니다. 턴 제한을 늘려 보세요.</p>
+              <p>인연 예장만 끼고 {prefs.maxTurns}턴 안에 보구로 정리할 수 있는 조합을 찾지 못했습니다.</p>
+              <p className="small">
+                이 계산기는 보구만 계산하고 시작 NP를 주는 예장을 끼지 않는다고 봅니다. 실제로는 평타로 마무리되는 전투도 여기서는 실패로 나옵니다. 시도해 볼 것:
+                {!prefs.mc && ' 마술예장 고르기(NP 충전·공격력 스킬이 큰 차이를 만듭니다) ·'}
+                {' '}턴 제한 늘리기 · 대미지 난수를 평균으로 · 평타 NP 가정 올리기
+                {prefs.poolMode === 'owned' && ' · 서번트 풀을 전체로 바꿔 가능한 편성 확인'}
+              </p>
               {output.bestFail && <p>가장 근접한 조합: {output.bestFail.names.join(' + ')} — 적 {output.bestFail.sim.total}기 중 {output.bestFail.sim.killed}기 처치{output.bestFail.sim.bars > output.bestFail.sim.total ? `, HP 게이지 ${output.bestFail.sim.bars}줄 중 ${output.bestFail.sim.broken}줄 파괴` : ''}</p>}
             </div>
           )}
