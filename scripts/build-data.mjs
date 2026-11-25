@@ -149,14 +149,18 @@ for (const c of load('ce.json')) {
 
 // ---------- 퀘스트 색인 ----------
 const wars = [];
+const DAILY_WAR = 1002; // 칼데아 게이트의 요일 퀘스트(종화 수집, 수련장, 보물창고)
+const nowSec = Date.now() / 1000;
 for (const w of load('KR_nice_war.json')) {
-  if (w.id >= 1000) continue;
+  if (w.id >= 1000 && w.id !== DAILY_WAR) continue;
   const quests = [];
   for (const sp of w.spots) {
     for (const q of sp.quests) {
-      if (q.type !== 'main' && q.type !== 'free') continue;
+      // 요일 퀘스트는 지금 열려 있는 것만 넣고 프리 퀘스트로 취급한다
+      const daily = w.id === DAILY_WAR && q.closedAt > nowSec;
+      if (q.type !== 'main' && q.type !== 'free' && !daily) continue;
       quests.push({
-        id: q.id, type: q.type, name: q.name.trim(), spot: sp.name, chapter: q.chapterId || 0,
+        id: q.id, type: daily ? 'free' : q.type, name: q.name.trim(), spot: sp.name, chapter: q.chapterId || 0,
         sub: q.chapterSubId || 0, subStr: (q.chapterSubStr || '').trim(), phases: q.phases,
         noBattle: q.phasesNoBattle || [], ap: q.consume, lv: q.recommendLv || '',
       });
@@ -164,7 +168,8 @@ for (const w of load('KR_nice_war.json')) {
   }
   if (!quests.length) continue;
   quests.sort((a, b) => a.id - b.id);
-  wars.push({ id: w.id, name: w.name, longName: w.longName.replace(/\n/g, ' '), quests });
+  const longName = w.id === DAILY_WAR ? '칼데아 게이트 요일 퀘스트' : w.longName.replace(/\n/g, ' ');
+  wars.push({ id: w.id, name: w.name, longName, quests });
 }
 
 // ---------- 이름, 상성 ----------

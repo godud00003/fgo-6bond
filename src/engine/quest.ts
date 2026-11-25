@@ -16,6 +16,7 @@ const ALIASES: [RegExp, number][] = [
 ];
 
 const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+const PUNCT = /[-–—~·・,<>《》〈〉()[\]]/g;
 
 function battles(war: War, quests: QuestRef[]): Candidate[] {
   const out: Candidate[] = [];
@@ -76,10 +77,13 @@ export function resolveQuest(query: string, wars: War[]): Resolved {
 
   // 장·절로 좁히지 못했으면 퀘스트명·지명으로 검색
   if (!section) {
-    const words = q.split(/\s+/).map(norm).filter((w) => w && !/^(\d+(\.\d+)?부|\d+(\.\d+)?장|프리|퀘스트|배틀|전투|\d+번째)$/.test(w));
+    // 문장부호는 검색어와 퀘스트명 양쪽에서 지운다("칼데아 게이트-종화 수집 극급" ↔ "종화 수집<살・창 편>《극급》")
+    const plain = (s: string) => norm(s.replace(PUNCT, ''));
+    const words = q.replace(PUNCT, ' ').split(/\s+/).map(norm)
+      .filter((w) => w && !/^(\d+(\.\d+)?부|\d+(\.\d+)?장|프리|퀘스트|배틀|전투|\d+번째|칼데아|게이트|요일)$/.test(w));
     const stripped = words.filter((w) => !scope.some((s) => warIds.includes(s.id) && longNameHit(s, w)));
     if (stripped.length) {
-      const hit = cands.filter((c) => stripped.every((w) => norm(c.quest.name + c.quest.spot).includes(w)));
+      const hit = cands.filter((c) => stripped.every((w) => plain(c.quest.name + c.quest.spot).includes(w)));
       if (hit.length || !warIds.length) cands = hit;
     } else if (!warIds.length) cands = [];
     if (battleNo) cands = cands.filter((c) => c.battleNo === battleNo);
@@ -90,7 +94,7 @@ export function resolveQuest(query: string, wars: War[]): Resolved {
 }
 
 function longNameHit(w: War, nq: string): boolean {
-  const parts = w.longName.split(/[\s/・]+/).map(norm).filter((p) => p.length >= 2 && !/^lostbelt|^no\.\d|^제\d특이점$/.test(p));
+  const parts = w.longName.split(/[\s/・]+/).map(norm).filter((p) => p.length >= 2 && !/^lostbelt|^no\.\d|^제\d특이점$|^퀘스트$/.test(p));
   return parts.some((p) => nq.includes(p) || (nq.length >= 2 && p.includes(nq)));
 }
 

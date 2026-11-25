@@ -12,7 +12,7 @@ interface Prefs {
   friendCe: string; np5: number; np4: number; np3: number; teapot: number;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 115, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -209,7 +209,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
             <input type="number" min={1} max={15} value={prefs.maxTurns} onChange={(e) => set('maxTurns', Number(e.target.value) || 1)} />
           </label>
           <label>파티 코스트 상한
-            <input type="number" min={30} max={130} value={prefs.costCap} onChange={(e) => set('costCap', Number(e.target.value) || 115)} />
+            <input type="number" min={30} max={130} value={prefs.costCap} onChange={(e) => set('costCap', Number(e.target.value) || 112)} />
           </label>
           <label>대미지 난수
             <select value={prefs.roll} onChange={(e) => set('roll', Number(e.target.value))}>
