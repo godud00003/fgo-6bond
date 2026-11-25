@@ -21,6 +21,8 @@ export interface Settings {
   cardNp?: number;
   /** 프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성을 허용한다(기본 허용) */
   allowDup?: boolean;
+  /** 반드시 내 파티에 포함할 서번트(도감 번호). 딜러·서포터가 아니면 인연용 자리에 넣는다. */
+  must?: number[];
 }
 export interface Member { svt: Servant; friend: boolean; role: 'dealer' | 'support' | 'filler'; bond: number; counted: boolean }
 export interface PartyResult {
@@ -29,7 +31,11 @@ export interface PartyResult {
   /** 이 예장을 표시된 딜러에게 끼워야 클리어된다(예장 ATK가 필요한 편성) */
   atkCe?: { ce: BondCE; atk: number; dealer: string };
 }
-export interface SearchOutput { results: PartyResult[]; simulated: number; feasible: number; bestFail: { names: string[]; sim: SimResult } | null }
+export interface SearchOutput {
+  results: PartyResult[]; simulated: number; feasible: number; bestFail: { names: string[]; sim: SimResult } | null;
+  /** 필수 포함 서번트 때문에 결과가 없을 때의 안내 */
+  note?: string;
+}
 
 /** 주회 서포터로 쓰이는 서번트(도감 번호) */
 export const SUPPORT_NOS = [284, 314, 316, 215, 357, 37, 150, 353, 62, 241, 307, 90, 34, 79, 249];
@@ -176,7 +182,14 @@ export function search(
     return true;
   }).slice(0, st.topN);
   const feasible = cores.length + coresAtk.length;
-  return { results, simulated, feasible, bestFail: feasible ? null : bestFail };
+  let note: string | undefined;
+  if (st.must?.length && feasible && !results.length) {
+    const missing = st.must.filter((no) => !byNo.has(no)).map((no) => allByNo.get(no)?.name ?? `#${no}`);
+    note = missing.length
+      ? `필수 포함 서번트가 서번트 풀에 없습니다: ${missing.join(', ')}. 보유 서번트만 쓰는 중이라면 "내 서번트"에 등록되어 있는지 확인하세요.`
+      : '클리어되는 조합은 있지만, 필수 포함 서번트를 모두 넣으면 자리(내 서번트 5기)나 코스트가 모자랍니다.';
+  }
+  return { results, simulated, feasible, bestFail: feasible ? null : bestFail, note };
 }
 
 // ---------------------------------------------------------------- 인연 포인트 최적화
@@ -273,6 +286,9 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
 
   const match = pool.map((p) => condTypes.map((t) => condMatch(t.cond, p.svt.traits)));
   const idx = new Map(pool.map((p, i) => [p.svt.no, i]));
+  // 필수 포함 서번트: 풀에 없는 서번트가 하나라도 있으면 만족하는 편성이 없다
+  const mustIdx: number[] = [];
+  for (const no of st.must ?? []) { const i = idx.get(no); if (i === undefined) return []; mustIdx.push(i); }
   const is15 = pool.map((p) => (p.bond15 ? 1 : 0));
   // 슬롯을 쓰지 않고 더해지는 효과: 프렌드 예장 + 반드시 포함하는 예장
   const extraCondFor = (traits: number[]) => (fCe && fCe.cond.length ? friendPctFor(traits) : 0) + xCondFor(traits);
@@ -314,7 +330,10 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
 
     for (const core of coreList) {
       const ownIdx = core.own.map((p) => idx.get(p.svt.no)!);
-      const free = Math.min(SLOTS - ownIdx.length, pool.length - ownIdx.length);
+      // 필수 포함 서번트 중 코어에 없는 서번트는 인연용 자리를 미리 차지한다
+      const pre = mustIdx.filter((i) => !ownIdx.includes(i));
+      const free = Math.min(SLOTS - ownIdx.length, pool.length - ownIdx.length) - pre.length;
+      if (free < 0) continue;
       // 전열 보너스: 코어(딜러·서포터)는 항상 전열, 남는 전열 자리는 인연을 가장 많이 받는 서번트에게 준다
       const allFront = core.friend ? FRONT_FRIEND : 0;
       const frontFree = Math.max(0, 3 - (core.friend ? 1 : 0) - ownIdx.length);
@@ -326,8 +345,9 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
         n15M += is15[i];
         costM += pool[i].svt.cost; wM += w; aM += w * coreMul; cM += w * coreMul * condPct[i];
       }
+      for (const i of pre) costM += pool[i].svt.cost;
       if (costM > cap) continue;
-      const chosen: number[] = [];
+      const chosen: number[] = pre.slice();
       const rec = (ci: number, left: number, cost: number) => {
         if (left === 0) {
           const u = uniGet(r, cap - cost);
@@ -348,7 +368,7 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
         rec(ci + 1, left, cost);
         let c2 = cost, taken = 0;
         for (const i of classes[ci]) {
-          if (ownIdx.includes(i)) continue;
+          if (ownIdx.includes(i) || pre.includes(i)) continue;
           c2 += pool[i].svt.cost;
           if (c2 > cap) break;
           chosen.push(i); taken++;

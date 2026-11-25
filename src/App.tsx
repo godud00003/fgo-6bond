@@ -10,10 +10,10 @@ import { importLogin, type Roster, type RosterEntry, type Stock } from './engine
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[];
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0, lv1: false, allowDup: true,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0, lv1: false, allowDup: true, must: [],
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -167,7 +167,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
       friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
-      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup,
+      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
     };
     w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
   };
@@ -288,6 +288,10 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 스킬 2 (시작 NP 20%) 적용</label>
         </div>
+        <MustPicker
+          servants={prefs.poolMode === 'owned' ? data.servants.filter((s) => roster[s.no]?.owned) : data.servants}
+          all={data.servants} value={prefs.must ?? []} onChange={(v) => set('must', v)}
+        />
         {prefs.poolMode === 'all' && (
           <div className="row muted small">
             미등록 서번트의 보구 레벨 가정: ★5
@@ -306,7 +310,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
         <section className="card">
           <h2>3. 추천 파티</h2>
           <p className="muted small">전투 조합 {output.simulated.toLocaleString()}개를 계산했고, 그중 {prefs.maxTurns}턴 안에 클리어되는 조합은 {output.feasible.toLocaleString()}개입니다.</p>
-          {!output.results.length && (
+          {output.note && <div className="warn"><p>{output.note}</p></div>}
+          {!output.results.length && !output.note && (
             <div className="warn">
               <p>인연 예장만 끼고 {prefs.maxTurns}턴 안에 보구로 정리할 수 있는 조합을 찾지 못했습니다. 턴 제한을 늘려 보세요.</p>
               {output.bestFail && <p>가장 근접한 조합: {output.bestFail.names.join(' + ')} — 적 {output.bestFail.sim.total}기 중 {output.bestFail.sim.killed}기 처치{output.bestFail.sim.bars > output.bestFail.sim.total ? `, HP 게이지 ${output.bestFail.sim.bars}줄 중 ${output.bestFail.sim.broken}줄 파괴` : ''}</p>}
@@ -316,6 +321,40 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
         </section>
       )}
     </main>
+  );
+}
+
+/** 반드시 파티에 넣을 서번트를 고른다. 이름을 입력하면 후보가 뜨고, 고르면 칩으로 추가된다. */
+function MustPicker({ servants, all, value, onChange }: { servants: Servant[]; all: Servant[]; value: number[]; onChange: (v: number[]) => void }) {
+  const [text, setText] = useState('');
+  const label = (s: Servant) => `${s.name} (★${s.rarity} ${CLASS_KO[s.cls] ?? s.cls} · No.${s.no})`;
+  const q = text.trim();
+  const hits = q ? servants.filter((s) => !value.includes(s.no) && s.name.includes(q)).slice(0, 8) : [];
+  const add = (no: number) => { onChange([...value, no]); setText(''); };
+  return (
+    <div className="must">
+      <div className="row">
+        <span className="small">반드시 포함할 서번트</span>
+        {value.map((no) => {
+          const s = all.find((x) => x.no === no);
+          return (
+            <span key={no} className="ce need">
+              {s ? s.name : `No.${no}`}{s && !servants.includes(s) ? ' (풀에 없음)' : ''}
+              <button className="x" title="빼기" onClick={() => onChange(value.filter((v) => v !== no))}>×</button>
+            </span>
+          );
+        })}
+        <input className="grow" placeholder={value.length >= 5 ? '최대 5기' : '이름으로 검색해 추가 (예: 로우히)'} value={text} disabled={value.length >= 5}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && hits.length) { e.preventDefault(); add(hits[0].no); } }} />
+      </div>
+      {hits.length > 0 && (
+        <div className="row">
+          {hits.map((s) => <button key={s.no} onClick={() => add(s.no)}>{label(s)}</button>)}
+        </div>
+      )}
+      {value.length > 0 && <p className="muted small">고른 서번트는 내 파티에 반드시 들어갑니다. 딜러나 서포터로 쓰이지 않으면 인연을 받는 자리에 넣습니다.</p>}
+    </div>
   );
 }
 
