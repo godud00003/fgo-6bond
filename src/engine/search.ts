@@ -40,6 +40,8 @@ export interface Member {
   svt: Servant; friend: boolean; role: 'dealer' | 'support' | 'filler'; bond: number; counted: boolean;
   /** 후열에서 시작해 전투 중 들어오는 교체 요원 / 오더 체인지로 내보내는 서번트 */
   sub?: boolean; swapOut?: boolean;
+  /** 이 서번트에게 끼우는 예장(인연 효과는 누가 껴도 같고, ATK가 높은 예장을 딜러에게 먼저 준다). 프렌드는 프렌드가 낀 예장. */
+  ce?: { ce: BondCE; mlb: boolean };
 }
 export interface PartyResult {
   turns: number; front: Member[]; back: Member[]; ces: { ce: BondCE; mlb: boolean }[];
@@ -47,7 +49,7 @@ export interface PartyResult {
   /** 이 예장을 표시된 딜러에게 끼워야 클리어된다(예장 ATK가 필요한 편성) */
   atkCe?: { ce: BondCE; atk: number; dealer: string };
   /** 이 마술예장을 써야 클리어된다(없으면 예장과 무관) */
-  mc?: { id: number; name: string };
+  mc?: { id: number; name: string; face?: string };
 }
 export interface SearchOutput {
   results: PartyResult[]; simulated: number; feasible: number; bestFail: { names: string[]; sim: SimResult } | null;
@@ -355,7 +357,7 @@ export function bondFor(base: number, front: number, pct: number, flat: number):
   return Math.floor((b * (1000 + Math.min(pct, PCT_CAP))) / 1000) + flat;
 }
 
-interface UniItem { ce: BondCE; mlb: boolean; cost: number; g: number; pct: number; flat: number }
+interface UniItem { ce: BondCE; mlb: boolean; cost: number; g: number; pct: number; flat: number; atk: number }
 interface Node { item: UniItem; prev: Node | null; pct: number; flat: number }
 
 /** forced: 반드시 포함할 예장(주 딜러에게 끼우는 ATK 예장). 예장 칸 하나와 코스트를 미리 차지한다. */
@@ -396,10 +398,13 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     } else {
       const isFlat = s.ce.kind === 'flat';
       const g = isFlat ? pctOf(s) : (base * AVG_FRONT * pctOf(s)) / 1000;
-      for (let i = 0; i < n; i++) uni.push({ ce: s.ce, mlb: s.mlb, cost: s.ce.cost, g, pct: isFlat ? 0 : pctOf(s), flat: isFlat ? pctOf(s) : 0 });
+      for (let i = 0; i < n; i++) uni.push({ ce: s.ce, mlb: s.mlb, cost: s.ce.cost, g, pct: isFlat ? 0 : pctOf(s), flat: isFlat ? pctOf(s) : 0, atk: s.atk ?? s.ce.atk });
     }
   }
   for (const t of condTypes) t.copies.sort((a, b) => b.pct - a.pct || a.cost - b.cost);
+  // 인연 효과와 코스트가 같으면 ATK가 높은 예장을 고른다(예: 칼데아 티타임 대신 명탐정 폼즈).
+  // 아래 계산은 먼저 본 예장을 유지하므로 ATK가 높은 순으로 늘어놓는다.
+  uni.sort((a, b) => b.atk - a.atk);
 
   // 조건 없는 예장: 슬롯 j개, 코스트 c 이하에서 얻는 서번트 1기당 최대 이득
   const dp: number[][] = [], pick: (Node | null)[][] = [];
@@ -578,12 +583,20 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     const own = [...coreMembers, ...fillers];
     // 반드시 포함하는 예장은 효과를 위에서 이미 더했으므로 목록에만 추가한다
     const allCes = forced ? [{ ce: forced.ce, mlb: forced.mlb }, ...ces] : ces;
+    // 누가 어떤 예장을 끼는지 정한다: 필수 ATK 예장은 지정된 딜러에게, 나머지는 ATK가 높은 것부터 딜러 → 그 외 순으로
+    const atkDealer = forced ? (b.core.own.find((p) => b.core.roles.get(p.svt.no) === 'dealer' && !p.svt.np?.dies) ?? b.core.own[0]).svt.no : -1;
+    const ceAtk = (c: { ce: BondCE }) => stock.find((x) => x.ce.no === c.ce.no)?.atk ?? c.ce.atk;
+    const rest = ces.slice().sort((x, y) => ceAtk(y) - ceAtk(x));
+    const ownInOrder = [...front, ...back].filter((m) => m.svt && !m.friend);
+    for (const m of ownInOrder) if (forced && m.svt.no === atkDealer) m.ce = { ce: forced.ce, mlb: forced.mlb };
+    for (const m of [...ownInOrder.filter((x) => x.role === 'dealer'), ...ownInOrder.filter((x) => x.role !== 'dealer')]) if (!m.ce && rest.length) m.ce = rest.shift();
+    if (fCe) for (const m of [...front, ...back]) if (m.friend) m.ce = { ce: fCe, mlb: fMlb === 1 };
     out.push({
       turns: b.core.sim.turns, front, back, ces: allCes, friendCe: fCe, sim: b.core.sim,
       total: own.reduce((s, m) => s + (m.counted ? m.bond : 0), 0),
       cost: own.reduce((s, m) => s + m.svt.cost, 0) + allCes.reduce((s, c) => s + c.ce.cost, 0),
       atkCe: forced ? { ce: forced.ce, atk: forced.atk ?? forced.ce.atk, dealer: (b.core.own.find((p) => b.core.roles.get(p.svt.no) === 'dealer' && !p.svt.np?.dies) ?? b.core.own[0]).svt.name } : undefined,
-      mc: b.core.mc ? { id: b.core.mc.id, name: b.core.mc.name } : undefined,
+      mc: b.core.mc ? { id: b.core.mc.id, name: b.core.mc.name, face: b.core.mc.face } : undefined,
     });
   }
   return out;

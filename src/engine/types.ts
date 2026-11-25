@@ -75,7 +75,7 @@ export interface ActorCfg {
 }
 
 /** 마술예장. 스킬은 서번트 스킬과 같은 형식이며 레벨 10 기준으로 쓴다. */
-export interface MysticCode { id: number; name: string; skills: Skill[] }
+export interface MysticCode { id: number; name: string; skills: Skill[]; /** 아이콘 이미지 주소 */ face?: string }
 
 export interface EnemyDef {
   name: string; cls: string; attr: string; traits: number[]; bars: number[]; tdRate: number; deckId: number;

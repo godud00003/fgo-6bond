@@ -306,7 +306,7 @@ for (const w of load('KR_nice_war.json')) {
 const mcs = [];
 for (const m of load('KR_nice_mystic_code.json')) {
   const skills = m.skills.map((k) => compactSkill(k, 10));
-  if (skills.some((k) => k.fn.length)) mcs.push({ id: m.id, name: m.name, skills });
+  if (skills.some((k) => k.fn.length)) mcs.push({ id: m.id, name: m.name, skills, face: m.extraAssets?.item?.male || '' });
 }
 
 // ---------- 이름, 상성 ----------

@@ -390,16 +390,24 @@ function Face({ src, name }: { src: string; name: string }) {
 
 function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number }) {
   const [open, setOpen] = useState(rank === 1);
-  const member = (m: PartyResult['front'][0], k: number) => (
-    <div key={k} className={`member ${m.friend ? 'friend' : ''}`}>
+  // 게임의 편성 화면처럼 한 칸에 서번트와 그 서번트가 끼는 예장을 함께 보여 준다
+  const member = (m: PartyResult['front'][0], k: number, pos: number) => (
+    <div key={k} className={`slot ${m.friend ? 'friend' : ''}`}>
+      <div className="pos">{pos}</div>
       {m.svt ? <Face src={m.svt.face} name={m.svt.name} /> : <span className="face ph">?</span>}
-      <div>
-        <div className="mname">{m.svt ? m.svt.name : '프렌드 (자유)'}</div>
-        <div className="small muted">
-          {m.friend ? `프렌드 ${m.role === 'dealer' ? '(딜러)' : '서포트'}` : ROLE_KO[m.role]}
-          {m.sub && <b className="sub"> · 교체 투입</b>}{m.swapOut && <b className="sub"> · 오더 체인지로 나감</b>}
-          {m.svt && !m.friend && <> · <b className={m.counted ? 'bond' : ''}>{m.counted ? `+${m.bond.toLocaleString()}` : '인연 MAX'}</b></>}
-        </div>
+      <div className="mname">{m.svt ? m.svt.name : '프렌드 (자유)'}</div>
+      <div className="small muted">
+        {m.friend ? (m.svt ? `프렌드 ${m.role === 'dealer' ? '(딜러)' : '서포트'}` : '아무 서번트나') : ROLE_KO[m.role]}
+        {m.sub && <b className="sub"> · 교체 투입</b>}{m.swapOut && <b className="sub"> · 오더 체인지로 나감</b>}
+      </div>
+      {m.svt && !m.friend && <div className="small"><b className={m.counted ? 'bond' : 'muted'}>{m.counted ? `+${m.bond.toLocaleString()}` : '인연 MAX'}</b></div>}
+      <div className={`slotce ${r.atkCe && m.ce?.ce.no === r.atkCe.ce.no && !m.friend ? 'need' : ''}`}>
+        {m.ce ? (
+          <>
+            <Face src={m.ce.ce.face} name={m.ce.ce.name} />
+            <span className="small">{m.ce.ce.name}{m.ce.ce.rarity === 5 && !m.ce.mlb ? ' (미해방)' : ''}</span>
+          </>
+        ) : <span className="small muted">{m.friend ? '인연 예장 없음' : '예장 없음'}</span>}
       </div>
     </div>
   );
@@ -411,15 +419,18 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
         <span className="muted">기본치의 {(r.total / base).toFixed(2)}배 · {r.turns}턴 · 코스트 {r.cost}</span>
         <span className="toggle">{open ? '접기' : '자세히'}</span>
       </div>
-      <div className="line"><span className="tag">전열</span>{r.front.map(member)}</div>
-      <div className="line"><span className="tag">후열</span>{r.back.map(member)}</div>
-      {r.mc && <div className="line"><span className="tag">마술예장</span><span className="ce need">{r.mc.name.replace(/^마술예장 /, '')}</span><span className="small muted">이 예장의 스킬을 써야 클리어됩니다 (레벨 10 기준)</span></div>}
-      <div className="line ces">
-        <span className="tag">예장</span>
-        {r.ces.map((c, k) => (
-          <span key={k} className={`ce ${r.atkCe?.ce.no === c.ce.no && k === 0 ? 'need' : ''}`}>{c.ce.name}{c.ce.rarity === 5 ? (c.mlb ? ' (최대해방)' : ' (미해방)') : ''}{r.atkCe?.ce.no === c.ce.no && k === 0 ? ` → ${r.atkCe.dealer}` : ''}</span>
-        ))}
-        {r.friendCe && <span className="ce friend">프렌드: {r.friendCe.name}</span>}
+      <div className="formation">
+        <div className="row3"><span className="tag">전열</span>{r.front.map((m, k) => member(m, k, k + 1))}</div>
+        <div className="row3"><span className="tag">후열</span>{r.back.map((m, k) => member(m, k, k + 4))}</div>
+      </div>
+      <div className="line">
+        <span className="tag">마술예장</span>
+        {r.mc ? (
+          <>
+            <span className="ce need mc">{r.mc.face && <img className="mcicon" src={r.mc.face} alt="" loading="lazy" />}{r.mc.name.replace(/^마술예장 /, '')}</span>
+            <span className="small muted">이 예장의 스킬을 써야 클리어됩니다 (레벨 10 기준)</span>
+          </>
+        ) : <span className="small muted">아무거나 (마술예장 스킬 없이 클리어)</span>}
       </div>
       {open && (
         <div className="log">
