@@ -78,6 +78,19 @@ function compactFn(f, levels) {
   return o;
 }
 
+// 기본 특성 + 나중에 추가된 상시 특성(traitAdd). 이벤트 한정·특정 재림 한정 특성은 뺀다.
+// 예: 어둠의 코얀스카야의 [짐승과의 서번트](2821)는 traitAdd에만 들어 있다.
+const buildSec = Date.now() / 1000;
+function allTraits(s) {
+  const out = new Set(ids(s.traits));
+  for (const a of s.traitAdd || []) {
+    if (a.eventId !== 0 || a.limitCount !== -1 || a.condType !== 'none') continue;
+    if (a.startedAt > buildSec || a.endedAt < buildSec) continue;
+    for (const t of a.trait) out.add(t.id);
+  }
+  return [...out];
+}
+
 const best = (list) => list.reduce((a, b) => (b.priority > a.priority || (b.priority === a.priority && b.id > a.id) ? b : a));
 
 const rawServants = load('KR_nice_servant.json');
@@ -112,7 +125,7 @@ for (const s of rawServants) {
   const g = s.atkGrowth;
   servants.push({
     id: s.id, no: s.collectionNo, name: s.name, cls: s.className, rarity: s.rarity, cost: s.cost,
-    attr: s.attribute, traits: ids(s.traits),
+    attr: s.attribute, traits: allTraits(s),
     atk: { max: g[s.lvMax - 1], 100: g[99], 120: g[119] },
     skills, np, passive,
     face: s.extraAssets?.faces?.ascension?.['1'] || '',
