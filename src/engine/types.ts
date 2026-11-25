@@ -33,6 +33,8 @@ export interface NP {
 export interface Servant {
   id: number; no: number; name: string; cls: string; rarity: number; cost: number; attr: string;
   traits: number[]; atk: { 1: number; max: number; 100: number; 120: number };
+  /** 레벨별 ATK(색인 0 = Lv1). 예전 데이터에는 없을 수 있다. */
+  growth?: number[];
   skills: Skill[]; np: NP | null; passive: Fn[]; face: string;
   /** 영기재림 단계(0~4)별 특성. 단계에 따라 특성이 달라지는 서번트에만 있다. traits는 4단계 기준. */
   asc?: number[][];

@@ -220,6 +220,8 @@ export function transform(raw, now) {
       id: s.id, no: s.collectionNo, name: s.name, cls: s.className, rarity: s.rarity, cost: s.cost,
       attr: s.attribute, traits: allTraits(s, 4), asc: traitsByStage(s),
       atk: { 1: g[0], max: g[s.lvMax - 1], 100: g[99], 120: g[119] },
+      // 레벨별 ATK(1~120). 레벨만 아는 데이터(Chaldea 백업)에서 정확한 ATK를 구하는 데 쓴다.
+      growth: g.slice(0, 120),
       skills, np, passive,
       face: s.extraAssets?.faces?.ascension?.['1'] || '',
     });

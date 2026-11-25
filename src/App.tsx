@@ -543,10 +543,10 @@ function RosterTab({ data, roster, setRoster, onLogin }: {
         <h2>내 서번트</h2>
         <p className="muted small">보유한 서번트를 체크하세요. "인연 MAX"로 표시한 서번트는 전투에는 쓰지만 인연 합계에서 빼고, 인연을 받는 자리에는 넣지 않습니다. "인연 15"로 표시한 서번트는 파티에 있으면 다른 파티원 전원의 인연이 25% 늘어납니다. 이 브라우저에 저장됩니다.</p>
         <div className="row">
-          <button className="primary" onClick={() => loginFile.current?.click()}>게임 로그인 데이터 가져오기</button>
+          <button className="primary" onClick={() => loginFile.current?.click()}>계정 데이터 가져오기</button>
           <input ref={loginFile} type="file" accept=".txt,.json,application/json,text/plain" hidden
             onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void doLogin(f); }} />
-          <span className="muted small">로그인 응답 파일(예: fgo_login_kr.txt)을 고르면 보유 서번트, 레벨·보구·스킬·어펜드, 인연 레벨, 인연 예장, 코스트 상한이 한 번에 채워집니다. 파일은 이 브라우저 안에서만 읽고, 기존 등록 내용은 덮어씁니다.</span>
+          <span className="muted small">게임 로그인 응답 파일(예: fgo_login_kr.txt)이나 Chaldea 앱의 백업 파일(chaldea-userdata-….json)을 고르면 보유 서번트, 레벨·보구·스킬·어펜드, 인연 레벨, 인연 예장이 한 번에 채워집니다. 파일은 이 브라우저 안에서만 읽고, 기존 등록 내용은 덮어씁니다. Chaldea 백업에는 레벨과 코스트 상한이 없어서 레벨은 재림 단계로 추정합니다.</span>
         </div>
         {msg && <p className={msg.ok ? 'ok' : 'error'}>{msg.text}</p>}
         <div className="row">

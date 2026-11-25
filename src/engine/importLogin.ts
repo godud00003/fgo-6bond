@@ -43,7 +43,9 @@ function parse(text: string): any {
 
 export function importLogin(text: string, servants: Servant[], ces: BondCE[]): LoginImport {
   let json: any;
-  try { json = parse(text); } catch { throw new Error('JSON 형식이 아닙니다. 게임 로그인 응답 파일인지 확인하세요.'); }
+  try { json = parse(text); } catch { throw new Error('JSON 형식이 아닙니다. 게임 로그인 응답 파일이나 Chaldea 백업 파일인지 확인하세요.'); }
+  // Chaldea 앱의 유저데이터 백업(chaldea-userdata-*.json)
+  if (Array.isArray(json?.users) && json.users.length) return importChaldea(json, servants, ces);
   const tables = json?.cache?.replaced ?? json?.replaced ?? json;
   const rows: UserSvt[] = [...(tables?.userSvt ?? []), ...(tables?.userSvtStorage ?? [])];
   if (!rows.length) throw new Error('보유 서번트 목록(userSvt)이 없습니다. 게임 로그인 응답 파일인지 확인하세요.');
@@ -111,4 +113,77 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
     roster, stock, costCap: typeof costMax === 'number' && costMax > 0 ? costMax : null,
     servants: best.size, ceKinds: ceLimits.size, ceCopies, unknown,
   };
+}
+
+// ---------------------------------------------------------------- Chaldea 유저데이터
+
+// 재림 단계별 레벨 상한(★0은 ★2와 같다)
+const ASC_CAP: Record<number, number[]> = {
+  5: [50, 60, 70, 80, 90], 4: [40, 50, 60, 70, 80], 3: [30, 40, 50, 60, 70], 2: [25, 35, 45, 55, 65], 1: [20, 30, 40, 50, 60], 0: [25, 35, 45, 55, 65],
+};
+/** 성배를 n개 쓴 뒤의 레벨: 90까지는 5씩(★1·★2의 첫 단계는 70으로), 그 뒤로는 2씩, 최대 120 */
+function grailLevel(maxLv: number, grails: number): number {
+  let lv = maxLv;
+  for (let i = 0; i < grails && lv < 120; i++) lv = lv < 70 ? 70 : lv < 90 ? lv + 5 : lv + 2;
+  return lv;
+}
+/** 레벨에 맞는 ATK. 레벨별 표가 없는 예전 데이터에서는 Lv1·기본 최대·100·120 사이를 직선으로 잇는다(근사치). */
+function atkAt(svt: Servant, lv: number, maxLv: number): number {
+  if (svt.growth?.[lv - 1] !== undefined) return svt.growth[lv - 1];
+  const pts: [number, number][] = [[1, svt.atk[1]], [maxLv, svt.atk.max], [100, svt.atk[100]], [120, svt.atk[120]]];
+  for (let i = 1; i < pts.length; i++) {
+    const [l0, a0] = pts[i - 1], [l1, a1] = pts[i];
+    if (lv <= l1 && l1 > l0) return Math.round(a0 + ((a1 - a0) * (lv - l0)) / (l1 - l0));
+  }
+  return svt.atk[120];
+}
+
+/**
+ * Chaldea 백업에는 레벨이 없고 재림 단계와 성배 수만 있다. 그래서 레벨은 이렇게 본다:
+ * 재림 4단계는 기본 최대(+성배), 1~3단계는 그 단계의 레벨 상한, 0단계는 Lv1.
+ * (실제 계정과 대조하면 재림한 서번트는 대개 그 단계의 상한까지, 재림하지 않은 서번트는 대개 Lv1이다.)
+ * 예장은 종류별 보유 여부만 있어 1장으로 보고, 코스트 상한은 들어 있지 않다.
+ */
+function importChaldea(json: any, servants: Servant[], ces: BondCE[]): LoginImport {
+  const user = json.users[json.curUserKey ?? 0] ?? json.users[0];
+  const roster: Roster = {};
+  let count = 0;
+  for (const svt of servants) {
+    const st = user.servants?.[svt.no];
+    const cur = st?.cur;
+    if (!cur?.favorite) continue;
+    count++;
+    const caps = ASC_CAP[svt.rarity] ?? ASC_CAP[3];
+    const maxLv = caps[4];
+    const asc: number = Math.max(0, Math.min(4, cur.ascension ?? 0));
+    const level = asc >= 4 ? grailLevel(maxLv, cur.grail ?? 0) : asc === 0 ? 1 : caps[asc];
+    const fou = (cur.fouAtk3 ?? 0) * 50 + (cur.fouAtk ?? 0) * 20;
+    const skills: number[] = (cur.skills ?? [1, 1, 1]).map((n: number) => Math.max(1, Math.min(10, n || 1)));
+    const append: number[] = cur.appendSkills ?? [];
+    const bond: number = st.bond ?? 0;
+    const bondCap: number = cur.bondLimit ?? 10;
+    const a5 = append[4] ?? 0;
+    roster[svt.no] = {
+      owned: true, npLv: Math.max(1, Math.min(5, cur.npLv ?? 1)),
+      lv: level >= 120 ? '120' : level >= 100 ? '100' : 'max',
+      skillLv: Math.min(...skills), skills,
+      atk: atkAt(svt, level, maxLv) + fou, fou, level, bond, asc,
+      startNp: (append[1] ?? 0) > 0 ? APPEND2[Math.min(append[1], 10) - 1] * 100 : 0,
+      reload: a5 >= 10 ? 3 : a5 >= 6 ? 2 : a5 >= 1 ? 1 : 0,
+      bondMax: bond >= bondCap, bond15: bond >= 15,
+    };
+  }
+  if (!count) throw new Error('Chaldea 백업에 보유(즐겨찾기) 표시된 서번트가 없습니다.');
+  const stock: Stock = {};
+  let kinds = 0;
+  for (const ce of ces) {
+    const c = user.craftEssences?.[ce.no];
+    const has = c?.status === 2;
+    if (has) kinds++;
+    // 예장 ATK는 레벨에 비례한다: Lv1에서 최대치의 1/4
+    const lvMax = ce.rarity >= 5 ? 100 : ce.rarity === 4 ? 80 : 60;
+    const atk = has ? Math.floor(ce.atk * (0.25 + (0.75 * (Math.min(c.lv ?? 1, lvMax) - 1)) / (lvMax - 1))) : 0;
+    stock[ce.no] = { count: has ? 1 : 0, mlb: has && (c.limitCount ?? 0) >= 4, atk };
+  }
+  return { roster, stock, costCap: null, servants: count, ceKinds: kinds, ceCopies: kinds, unknown: 0 };
 }
