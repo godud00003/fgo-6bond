@@ -120,12 +120,24 @@ export function search(
 
 // ---------------------------------------------------------------- 인연 포인트 최적화
 
-export function bondFor(base: number, pct: number, flat: number): number {
-  return Math.floor((base * (1000 + pct)) / 1000) + flat;
+// 한국 서버 게임 상수(Atlas NiceConstant): STARTING_MEMBER_FRIENDSHIP_RATE 1200, MAX_FRIEND_SHIP_UP_RATIO 3000
+/** 전열에 선 내 서번트 본인에게 붙는 보너스(‰) */
+export const FRONT_OWN = 200;
+/** 프렌드 서포트가 전열에 서면 파티 전원에게 붙는 보너스(‰) */
+export const FRONT_FRIEND = 40;
+/** 예장·이벤트 % 합의 상한(‰) */
+export const PCT_CAP = 3000;
+// 5기 편성의 평균 전열 보너스(내 서번트 3기 전열 = 프렌드 포함 2기 전열 = 12%). 조건 없는 예장을 고를 때의 근사치.
+const AVG_FRONT = 1.12;
+
+/** 인연 포인트 = 내림(내림(기본치 × (1 + 전열 보너스)) × (1 + % 합)) + 고정치 */
+export function bondFor(base: number, front: number, pct: number, flat: number): number {
+  const b = Math.floor((base * (1000 + front)) / 1000);
+  return Math.floor((b * (1000 + Math.min(pct, PCT_CAP))) / 1000) + flat;
 }
 
-interface UniItem { ce: BondCE; mlb: boolean; cost: number; g: number }
-interface Node { item: UniItem; prev: Node | null }
+interface UniItem { ce: BondCE; mlb: boolean; cost: number; g: number; pct: number; flat: number }
+interface Node { item: UniItem; prev: Node | null; pct: number; flat: number }
 
 function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest: QuestData, st: Settings): PartyResult[] {
   if (!cores.length) return [];
@@ -155,8 +167,9 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
       if (!t) condTypes.push((t = { cond: s.ce.cond, copies: [] }));
       for (let i = 0; i < n; i++) t.copies.push({ ce: s.ce, mlb: s.mlb, pct: pctOf(s), cost: s.ce.cost });
     } else {
-      const g = s.ce.kind === 'flat' ? pctOf(s) : (base * pctOf(s)) / 1000;
-      for (let i = 0; i < n; i++) uni.push({ ce: s.ce, mlb: s.mlb, cost: s.ce.cost, g });
+      const isFlat = s.ce.kind === 'flat';
+      const g = isFlat ? pctOf(s) : (base * AVG_FRONT * pctOf(s)) / 1000;
+      for (let i = 0; i < n; i++) uni.push({ ce: s.ce, mlb: s.mlb, cost: s.ce.cost, g, pct: isFlat ? 0 : pctOf(s), flat: isFlat ? pctOf(s) : 0 });
     }
   }
   for (const t of condTypes) t.copies.sort((a, b) => b.pct - a.pct || a.cost - b.cost);
@@ -167,7 +180,11 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
   for (const it of uni) {
     for (let j = SLOTS; j >= 1; j--) for (let c = cap; c >= it.cost; c--) {
       const prev = dp[j - 1][c - it.cost];
-      if (prev >= 0 && prev + it.g > dp[j][c]) { dp[j][c] = prev + it.g; pick[j][c] = { item: it, prev: pick[j - 1][c - it.cost] }; }
+      if (prev >= 0 && prev + it.g > dp[j][c]) {
+        const pn = pick[j - 1][c - it.cost];
+        dp[j][c] = prev + it.g;
+        pick[j][c] = { item: it, prev: pn, pct: (pn?.pct ?? 0) + it.pct, flat: (pn?.flat ?? 0) + it.flat };
+      }
     }
   }
   const uniBest = (r: number, budget: number): { g: number; node: Node | null } => {
@@ -187,7 +204,6 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
   const idx = new Map(pool.map((p, i) => [p.svt.no, i]));
   const fCond = pool.map((p) => friendPctFor(p.svt.traits));
   const fUniPct = fCe && fCe.kind === 'pct' && !fCe.cond.length ? fPct : 0;
-  const fG = (base * fUniPct) / 1000 + fFlat;
 
   // 코어는 보유 멤버 구성이 같으면 턴 수가 적은 것만 남긴다
   const uniq = new Map<string, Core>();
@@ -200,6 +216,9 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
 
   interface Best { value: number; core: Core; vec: number[]; fillers: number[]; uni: Node | null }
   const bests = new Map<Core, Best>();
+
+  // 전열 자리 우선순위: 인연을 받는 서번트 먼저, 그중 조건부 %가 높은 순
+  const frontKey = (i: number, condPct: number[]) => pool[i].weight * (10000 + condPct[i]);
 
   // 조건부 예장 장수 벡터 열거
   const vec = new Array(condTypes.length).fill(0);
@@ -220,34 +239,47 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     for (const core of coreList) {
       const ownIdx = core.own.map((p) => idx.get(p.svt.no)!);
       const free = Math.min(SLOTS - ownIdx.length, pool.length - ownIdx.length);
-      let costM = cc, wM = 0, condM = 0;
-      for (const i of ownIdx) { costM += pool[i].svt.cost; wM += pool[i].weight; condM += pool[i].weight * condPct[i]; }
+      // 전열 보너스: 코어(딜러·서포터)는 항상 전열, 남는 전열 자리는 인연을 가장 많이 받는 서번트에게 준다
+      const allFront = core.friend ? FRONT_FRIEND : 0;
+      const frontFree = Math.max(0, 3 - (core.friend ? 1 : 0) - ownIdx.length);
+      const coreMul = (1000 + FRONT_OWN + allFront) / 1000, backMul = (1000 + allFront) / 1000;
+      // a = Σ 가중치×전열배율, c = Σ 가중치×전열배율×조건부%
+      let costM = cc, wM = 0, aM = 0, cM = 0;
+      for (const i of ownIdx) {
+        const w = pool[i].weight;
+        costM += pool[i].svt.cost; wM += w; aM += w * coreMul; cM += w * coreMul * condPct[i];
+      }
       if (costM > cap) continue;
       const chosen: number[] = [];
-      const rec = (ci: number, left: number, cost: number, w: number, cond: number) => {
+      const rec = (ci: number, left: number, cost: number) => {
         if (left === 0) {
-          const budget = cap - cost;
-          const u = uniGet(r, budget);
-          const value = w * (base + u.g + fG) + (base * cond) / 1000;
+          const u = uniGet(r, cap - cost);
+          const order = frontFree ? chosen.slice().sort((x, y) => frontKey(y, condPct) - frontKey(x, condPct)) : chosen;
+          let w = wM, a = aM, c = cM;
+          order.forEach((i, k) => {
+            const wi = pool[i].weight, mul = k < frontFree ? coreMul : backMul;
+            w += wi; a += wi * mul; c += wi * mul * condPct[i];
+          });
+          const uPct = (u.node?.pct ?? 0) + fUniPct, uFlat = (u.node?.flat ?? 0) + fFlat;
+          const value = base * (a * (1 + uPct / 1000) + c / 1000) + w * uFlat;
           const cur = bests.get(core);
           if (!cur || value > cur.value) bests.set(core, { value, core, vec: vec.slice(), fillers: chosen.slice(), uni: u.node });
           return;
         }
         if (ci >= classes.length) return;
-        rec(ci + 1, left, cost, w, cond);
-        let c2 = cost, w2 = w, cond2 = cond, taken = 0;
+        rec(ci + 1, left, cost);
+        let c2 = cost, taken = 0;
         for (const i of classes[ci]) {
           if (ownIdx.includes(i)) continue;
           c2 += pool[i].svt.cost;
           if (c2 > cap) break;
-          w2 += pool[i].weight; cond2 += pool[i].weight * condPct[i];
           chosen.push(i); taken++;
-          if (taken <= left) rec(ci + 1, left - taken, c2, w2, cond2);
+          if (taken <= left) rec(ci + 1, left - taken, c2);
           if (taken >= left) break;
         }
         chosen.length -= taken;
       };
-      rec(0, free, costM, wM, condM);
+      rec(0, free, costM);
     }
   };
   const enumVec = (t: number, slots: number) => {
@@ -273,14 +305,20 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
       for (const c of ces) if (c.ce.kind === 'pct' && c.ce.cond.length && condMatch(c.ce.cond, traits)) p += c.ce.val[c.mlb ? 1 : 0];
       return p;
     };
-    const mk = (p: PoolEntry, role: Member['role']): Member =>
-      ({ svt: p.svt, friend: false, role, bond: bondFor(base, pctFor(p.svt.traits), flat), counted: p.weight > 0 });
-    const coreMembers = b.core.own.map((p) => mk(p, b.core.roles.get(p.svt.no) ?? 'filler'));
-    const fillers = b.fillers.map((i) => mk(pool[i], 'filler')).sort((x, y) => y.bond - x.bond);
+    const allFront = b.core.friend ? FRONT_FRIEND : 0;
+    const mk = (p: PoolEntry, role: Member['role'], inFront: boolean): Member => ({
+      svt: p.svt, friend: false, role, counted: p.weight > 0,
+      bond: bondFor(base, allFront + (inFront ? FRONT_OWN : 0), pctFor(p.svt.traits), flat),
+    });
+    const coreMembers = b.core.own.map((p) => mk(p, b.core.roles.get(p.svt.no) ?? 'filler', true));
     const friend: Member | null = b.core.friend ? { svt: b.core.friend, friend: true, role: 'support', bond: 0, counted: false } : null;
     const front: Member[] = [...coreMembers, ...(friend ? [friend] : [])];
     const back: Member[] = [];
-    for (const f of fillers) (front.length < 3 ? front : back).push(f);
+    const frontFree = Math.max(0, 3 - front.length);
+    const fillers = b.fillers.map((i) => pool[i])
+      .sort((x, y) => y.weight * (10000 + pctFor(y.svt.traits)) - x.weight * (10000 + pctFor(x.svt.traits)))
+      .map((p, k) => mk(p, 'filler', k < frontFree));
+    fillers.forEach((f, k) => (k < frontFree ? front : back).push(f));
     if (!friend) back.push({ svt: null as unknown as Servant, friend: true, role: 'filler', bond: 0, counted: false });
     const own = [...coreMembers, ...fillers];
     out.push({
