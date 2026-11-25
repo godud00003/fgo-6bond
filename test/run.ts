@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { resolveQuest, toQuestData } from '../src/engine/quest.ts';
 import { search, type PoolEntry, type CEStock } from '../src/engine/search.ts';
 import { simulate } from '../src/engine/sim.ts';
@@ -17,7 +18,7 @@ const c = r.candidates[Number(process.argv[3] || 0)];
 const cache = new URL(`../data/quests/${c.quest.id}_${c.phase}.json`, import.meta.url);
 if (!fs.existsSync(cache)) {
   fs.mkdirSync(new URL('../data/quests/', import.meta.url), { recursive: true });
-  execFileSync('curl', ['-sS', '-m', '60', '-o', cache.pathname, `https://api.atlasacademy.io/nice/JP/quest/${c.quest.id}/${c.phase}`]);
+  execFileSync('curl', ['-sS', '-m', '60', '-o', fileURLToPath(cache), `https://api.atlasacademy.io/nice/JP/quest/${c.quest.id}/${c.phase}`]);
 }
 const raw = JSON.parse(fs.readFileSync(cache, 'utf8'));
 const quest = toQuestData(raw, names, c.label);

@@ -94,6 +94,13 @@ function longNameHit(w: War, nq: string): boolean {
   return parts.some((p) => nq.includes(p) || (nq.length >= 2 && p.includes(nq)));
 }
 
+/** 나무위키 검색어: "Lostbelt No.6", "제1특이점" 같은 머리말과 가운뎃점을 빼야 검색 결과가 나온다. */
+export function namuQuery(longName: string): string {
+  const words = longName.replace(/・/g, ' ').split(/\s+/)
+    .filter((w) => !/^(Lostbelt|No\.\d+|제\d특이점|특이점F|종국특이점|아종특이점.?|아종평행세계|주장.)$/.test(w));
+  return words.length >= 2 ? words.join(' ') : longName;
+}
+
 const API = 'https://api.atlasacademy.io';
 
 /** Atlas Academy 응답(일본 서버 전투 데이터)을 시뮬레이터 입력으로 변환한다. */

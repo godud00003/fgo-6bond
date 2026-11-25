@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchQuest, resolveQuest, type Candidate } from './engine/quest.ts';
+import { fetchQuest, namuQuery, resolveQuest, type Candidate } from './engine/quest.ts';
 import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './engine/search.ts';
 import type { BondCE, QuestData, Rel, Servant, War } from './engine/types.ts';
 
@@ -178,7 +178,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
             <h3>{quest.name}</h3>
             <p className="muted">
               기본 인연 포인트 <b>{quest.bond.toLocaleString()}</b> · AP {picked.quest.ap} ·{' '}
-              <a href={`https://namu.wiki/Search?q=${encodeURIComponent(picked.war.longName)}`} target="_blank" rel="noreferrer">나무위키에서 이 장 찾기</a>
+              <a href={`https://namu.wiki/Search?q=${encodeURIComponent(namuQuery(picked.war.longName))}`} target="_blank" rel="noreferrer">나무위키에서 이 장 찾기</a>
             </p>
             {quest.warnings.map((w) => <p key={w} className="warn">{w}</p>)}
             {quest.waves.map((wave, i) => (
