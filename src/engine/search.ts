@@ -33,6 +33,8 @@ export interface Settings {
   orderChange?: boolean;
   /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
   cardNp?: number;
+  /** 령주 1획(NP +100%)을 쓰는 편성도 찾는다. 령주 없이 되는 편성은 령주를 쓰지 않는다. */
+  commandSpell?: boolean;
   /** 프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성을 허용한다(기본 허용) */
   allowDup?: boolean;
   /** 반드시 내 파티에 포함할 서번트(도감 번호). 딜러·서포터가 아니면 인연용 자리에 넣는다. */
@@ -52,6 +54,8 @@ export interface PartyResult {
   atkCe?: { ce: BondCE; atk: number; dealer: string };
   /** 이 마술예장을 써야 클리어된다(없으면 예장과 무관) */
   mc?: { id: number; name: string; face?: string };
+  /** 령주 1획을 써야 클리어된다 */
+  cs?: boolean;
 }
 export interface SearchOutput {
   results: PartyResult[]; simulated: number; feasible: number; bestFail: { names: string[]; sim: SimResult } | null;
@@ -70,6 +74,8 @@ interface Core {
   own: PoolEntry[]; friend: Servant | null; friendRole?: 'dealer' | 'support'; roles: Map<number, 'dealer' | 'support'>; sim: SimResult;
   /** 클리어에 쓴 마술예장 */
   mc: MysticCode | null;
+  /** 령주를 써야 클리어되는 편성인가 */
+  cs?: boolean;
   /** 후열에서 시작하는 내 서번트(도감 번호), 프렌드가 후열인지, 오더 체인지로 내보내는 서번트 */
   bench: Set<number>; friendBench: boolean; swapOut?: number;
   /** 전열의 자리 순서(도감 번호, 프렌드는 'f'). 진궁의 제물처럼 위치가 의미 있는 편성이 있다. */
@@ -96,9 +102,10 @@ export function search(
   const plusAtk = atkStock ? ceAtkOf(atkStock) : 0;
   const allowDup = st.allowDup !== false;
   let simulated = 0;
+  let useCs = false; // 지금 계산에서 령주를 쓸 수 있는가(령주 없이 안 될 때만 켠다)
   const run = (lineup: ActorCfg[], mc: MysticCode | null) => {
     simulated++;
-    return simulateBest(lineup, quest, rel, st.maxTurns, st.roll, { mc: mc?.skills, cardNp: st.cardNp });
+    return simulateBest(lineup, quest, rel, st.maxTurns, st.roll, { mc: mc?.skills, cardNp: st.cardNp, commandSpell: useCs });
   };
   const dmgOf = (s: SimResult) => s.log.reduce((n, t) => n + t.nps.reduce((m, x) => m + x.hits.reduce((k, h) => k + Math.min(h.dmg, h.hp), 0), 0), 0);
 
@@ -181,7 +188,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     const as = assignments(slots);
     if (!as.length) return 0;
     /** 프렌드 자리를 f0로 놓고 계산한다. 클리어되면 조건(마술예장·예장 ATK)을 가장 덜어 낸 결과를 돌려준다. */
-    const attempt = (f0: number): { sim: SimResult; mc: MysticCode | null; atk: boolean } | null => {
+    const attemptBase = (f0: number): { sim: SimResult; mc: MysticCode | null; atk: boolean } | null => {
       const mk = (plus: number): ActorCfg[] => slots.map((s, i) => ({
         ...(i === f0 ? friendCfg(allByNo.get(s.no)!, s.role) : cfg(byNo.get(s.no)!, s.role, s.boost ? plus : 0)),
         bench: s.bench, swapOut: s.swapOut, main: s.boost,
@@ -206,12 +213,21 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
       noteFail(mk(0).map((x) => x.svt.name), first);
       return null;
     };
-    const push = (f: number, r: { sim: SimResult; mc: MysticCode | null; atk: boolean }) => {
+    // 령주는 아껴 쓴다: 령주 없이 먼저 해 보고, 안 될 때만 령주를 쓴 계산을 한다
+    const attempt = (f0: number) => {
+      const plain = attemptBase(f0);
+      if (plain || !st.commandSpell) return plain && { ...plain, cs: false };
+      useCs = true;
+      const withCs = attemptBase(f0);
+      useCs = false;
+      return withCs && { ...withCs, cs: true };
+    };
+    const push = (f: number, r: { sim: SimResult; mc: MysticCode | null; atk: boolean; cs?: boolean }) => {
       const own = slots.filter((_, i) => i !== f);
       const roles = new Map<number, 'dealer' | 'support'>(own.map((s) => [s.no, s.role]));
       (r.atk ? coresAtk : cores).push({
         own: own.map((s) => byNo.get(s.no)!), friend: f >= 0 ? allByNo.get(slots[f].no)! : null,
-        friendRole: f >= 0 ? slots[f].role : undefined, roles, sim: r.sim, mc: r.mc,
+        friendRole: f >= 0 ? slots[f].role : undefined, roles, sim: r.sim, mc: r.mc, cs: r.cs,
         bench: new Set(own.filter((s) => s.bench).map((s) => s.no)), friendBench: f >= 0 && !!slots[f].bench,
         swapOut: slots.find((s) => s.swapOut)?.no,
         seq: slots.map((s, i) => ({ s, i })).filter((x) => !x.s.bench).map((x) => (x.i === f ? 'f' : String(x.s.no))),
@@ -321,7 +337,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     // 예장 ATK가 필요한 편성은 그 예장을 반드시 포함하는 조건으로 인연을 따로 최적화한다
     const all2 = [...optimizeBond(cores, pool, stock, quest, s2, null), ...(atkStock ? optimizeBond(coresAtk, pool, stock, quest, s2, atkStock) : [])];
     // 인연이 같으면 턴이 적고, 조건(예장 ATK·마술예장·교체)이 덜 붙은 편성을 앞에 둔다
-    const burden = (r: PartyResult) => Number(!!r.atkCe) + Number(!!r.mc) + Number(r.back.some((m) => m.sub));
+    const burden = (r: PartyResult) => Number(!!r.atkCe) + Number(!!r.mc) + Number(r.back.some((m) => m.sub)) + (r.cs ? 3 : 0);
     all2.sort((a, b) => b.total - a.total || a.turns - b.turns || burden(a) - burden(b) || a.cost - b.cost);
     // 멤버 구성이 완전히 같은 결과는 하나만
     const seen = new Set<string>();
@@ -474,7 +490,7 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     // 시작 위치(전열·후열)가 다르면 전열 보너스가 달라지므로 따로 본다
     const k = c.own.map((p) => p.svt.no + (c.bench.has(p.svt.no) ? 'b' : '')).sort().join(',') + (c.friend ? (c.friendBench ? '|fb' : '|ff') : '');
     const cur = uniq.get(k);
-    const worse = (x: Core) => x.sim.turns * 10 + (x.mc ? 1 : 0) + (x.swapOut !== undefined ? 2 : 0);
+    const worse = (x: Core) => x.sim.turns * 10 + (x.mc ? 1 : 0) + (x.swapOut !== undefined ? 2 : 0) + (x.cs ? 4 : 0);
     if (!cur || worse(c) < worse(cur)) uniq.set(k, c);
   }
   const coreList = [...uniq.values()].sort((a, b) => a.own.length - b.own.length || a.sim.turns - b.sim.turns).slice(0, 600);
@@ -621,6 +637,7 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
       cost: own.reduce((s, m) => s + m.svt.cost, 0) + allCes.reduce((s, c) => s + c.ce.cost, 0),
       atkCe: forced ? { ce: forced.ce, atk: forced.atk ?? forced.ce.atk, dealer: (b.core.own.find((p) => b.core.roles.get(p.svt.no) === 'dealer' && !p.svt.np?.dies) ?? b.core.own[0]).svt.name } : undefined,
       mc: b.core.mc ? { id: b.core.mc.id, name: b.core.mc.name, face: b.core.mc.face } : undefined,
+      cs: b.core.cs || undefined,
     });
   }
   return out;

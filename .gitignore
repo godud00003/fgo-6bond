@@ -6,3 +6,4 @@ dist-single
 *.zip
 chaldea-userdata-*.json
 /DEVNOTES.md
+/dc-post

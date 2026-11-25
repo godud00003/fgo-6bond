@@ -36,7 +36,8 @@ const mcs: MysticCode[] = j('mcs.json');
 // MC=auto 마술예장 자동 선택 / MC=예장 id, OC=1 오더 체인지 편성 포함
 // FNP=10000 이면 프렌드가 시작 NP 100% 예장을 낀 것으로 계산
 // FCE=auto 이면 프렌드 인연 예장 자동 선택
-const st = { friendCeAuto: process.env.FCE === 'auto', friendStartNp: Number(process.env.FNP || 0), reload: process.env.NORELOAD ? 0 : 3, must: (process.env.MUST || '').split(',').filter(Boolean).map(Number), allowDup: !process.env.NODUP, lv1, mc: mcs.find((m) => m.id === Number(process.env.MC)) ?? null, mcAuto: process.env.MC === 'auto' ? mcs : undefined, orderChange: !!process.env.OC, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
+// CS=1 이면 령주 1획(NP +100%) 사용 허용
+const st = { commandSpell: !!process.env.CS, friendCeAuto: process.env.FCE === 'auto', friendStartNp: Number(process.env.FNP || 0), reload: process.env.NORELOAD ? 0 : 3, must: (process.env.MUST || '').split(',').filter(Boolean).map(Number), allowDup: !process.env.NODUP, lv1, mc: mcs.find((m) => m.id === Number(process.env.MC)) ?? null, mcAuto: process.env.MC === 'auto' ? mcs : undefined, orderChange: !!process.env.OC, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
 const t0 = Date.now();
 const out = search(pool, servants, stock, quest, rel, st);
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0, out.autoFriendCe !== undefined ? '| 프렌드 예장 자동: ' + out.autoFriendCe : '');

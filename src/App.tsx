@@ -12,10 +12,10 @@ import { importLogin, type Roster, type RosterEntry, type Stock } from './engine
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fAppend2: boolean; fAppend5: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; autoUpdate: boolean;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; cs: boolean; autoUpdate: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false, autoUpdate: true,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false, cs: false, autoUpdate: true,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -216,7 +216,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       // 프렌드 예장 칸은 하나: 인연 예장이거나, 시작 NP 예장(np:수치)이거나
       friendCe: fNo && fNo !== 'np' && fNo !== 'auto' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendCeAuto: fNo === 'auto', friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
-      mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
+      mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, commandSpell: !!prefs.cs, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
     };
     w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
   };
@@ -343,6 +343,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           <label className="check" title="서포터 하나의 스킬을 다 쓴 뒤 후열의 다른 서포터와 바꾸는 편성도 찾습니다. 오더 체인지가 있는 마술예장(칼데아 전투복, 결전용 칼데아 제복)을 쓸 때만 적용됩니다. 계산이 조금 더 오래 걸립니다.">
             <input type="checkbox" checked={!!prefs.oc} onChange={(e) => set('oc', e.target.checked)} /> 오더 체인지 사용 (전투복·결전용 제복)
           </label>
+          <label className="check" title="령주 1획으로 아군 한 명의 NP를 100% 채우는 것을 허용합니다. 령주 없이 깨지는 편성에는 쓰지 않고, 령주를 써야만 되는 편성에는 결과에 표시합니다. 령주는 하루에 1획씩 회복됩니다.">
+            <input type="checkbox" checked={!!prefs.cs} onChange={(e) => set('cs', e.target.checked)} /> 령주 1획 사용 (NP +100%)
+          </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 2 (시작 NP 20%)</label>
           <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 5 (쿨타임 -1)</label>
           <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 2를 열었는지. 빌리는 상대에 따라 다르니 실제 프렌드에 맞게 고르세요."><input type="checkbox" checked={prefs.fAppend2 ?? true} onChange={(e) => set('fAppend2', e.target.checked)} /> 프렌드: 어펜드 스킬 2 (시작 NP 20%)</label>
@@ -381,6 +384,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
                 {prefs.mc === 0 && ' 마술예장을 자동 선택으로 ·'}
                 {!prefs.friendCe.startsWith('np:') && ' 프렌드 예장을 시작 NP 예장으로(프렌드가 칼레이도스코프를 낀 경우) ·'}
                 {!prefs.oc && ' 오더 체인지 켜기 ·'}
+                {!prefs.cs && ' 령주 1획 사용 켜기 ·'}
                 {' '}턴 제한 늘리기 · 대미지 난수를 평균으로 · 평타 NP 가정 올리기
                 {prefs.poolMode === 'owned' && ' · 서번트 풀을 전체로 바꿔 가능한 편성 확인'}
               </p>
@@ -479,6 +483,7 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
             <span className="small muted">이 예장의 스킬을 써야 클리어됩니다 (레벨 10 기준)</span>
           </>
         ) : <span className="small muted">아무거나 (마술예장 스킬 없이 클리어)</span>}
+        {r.cs && <span className="ce need">령주 1획 사용 (NP +100%)</span>}
       </div>
       {open && (
         <div className="log">

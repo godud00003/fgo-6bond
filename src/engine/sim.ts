@@ -43,6 +43,8 @@ export interface SimExtra {
   mc?: Skill[] | null;
   /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
   cardNp?: number;
+  /** 령주 1획을 쓸 수 있다: 아군 한 명의 NP를 100% 채운다(전투당 1회) */
+  commandSpell?: boolean;
 }
 export type SimMode = 'lazy' | 'eager' | 'relay';
 export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: SimMode }
@@ -608,6 +610,10 @@ function endTurn(s: State): boolean {
   return false;
 }
 
+/** 령주: 마스터 스킬처럼 다루되 한 번 쓰면 다시 돌아오지 않는다 */
+export const COMMAND_SPELL_NAME = '령주 (NP 100%)';
+const COMMAND_SPELL: Skill = { name: COMMAND_SPELL_NAME, cd: [999], fn: [{ t: 'gainNp', tg: 'ptOne', sv: { Rate: 1000, Value: 10000 } }] };
+
 function masterActor(skills: Skill[]): Actor {
   const svt = { id: 0, no: 0, name: '마스터', cls: '', rarity: 0, cost: 0, attr: '', traits: [], atk: { 1: 0, max: 0, 100: 0, 120: 0 }, skills, np: null, passive: [], face: '' } as Servant;
   return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false, reload: 0, reloaded: [] };
@@ -625,7 +631,7 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
     actors: front.filter((c) => !c.bench).map(mkActor),
     bench: front.filter((c) => c.bench).map(mkActor),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
-    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0, expend: null,
+    master: opt.mc?.length || opt.commandSpell ? masterActor([...(opt.mc ?? []), ...(opt.commandSpell ? [COMMAND_SPELL] : [])]) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0, expend: null,
   };
   setLabels(front);
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
