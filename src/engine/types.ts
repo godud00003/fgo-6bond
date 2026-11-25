@@ -6,6 +6,8 @@ export interface BuffDef {
   t: string; cs?: number[]; co?: number[]; v?: number[]; ur?: number[];
   /** 보유자가 이 특성 중 하나(또는 필드 특성)를 가질 때만 걸리는 버프 */
   si?: number[];
+  /** t가 'turnEnd'일 때: 턴 종료 시 보유자에게 일어나는 일 */
+  te?: { t: 'lossNp' | 'gainNp' | 'clear' | 'disable'; v?: number }[];
 }
 export interface Fn { t: string; tg: string; sv: Sv | Sv[]; tv?: number[]; qtv?: number[]; b?: BuffDef[] }
 export interface Skill {
@@ -14,9 +16,15 @@ export interface Skill {
   init?: number[];
   /** 사용에 필요한 최소 NP(%, 레벨별) */
   needNp?: number[];
+  /** 대상을 턴 종료 후 행동 불능으로 만드는 스킬. 마지막 웨이브나 곧 퇴장할 대상에게만 쓴다. */
+  fin?: boolean;
 }
 export type Card = 'arts' | 'buster' | 'quick';
-export interface NP { name: string; card: Card; gain: number; dist: number[]; fn: Fn[]; dmg: boolean; aoe: boolean }
+export interface NP {
+  name: string; card: Card; gain: number; dist: number[]; fn: Fn[]; dmg: boolean; aoe: boolean;
+  /** 보구 사용 후 퇴장: 'self' 자신이 죽는다, 'ally' 선두의 다른 아군 1기를 제물로 쓴다 */
+  dies?: 'self' | 'ally';
+}
 export interface Servant {
   id: number; no: number; name: string; cls: string; rarity: number; cost: number; attr: string;
   traits: number[]; atk: { 1: number; max: number; 100: number; 120: number };
@@ -51,6 +59,10 @@ export interface ActorCfg {
   startNp: number;    // 시작 NP (10000 = 100%)
   role: 'dealer' | 'support' | 'filler' | 'master';
   friend?: boolean;
+  /** 후열에서 시작한다. 전열이 퇴장하거나 오더 체인지를 쓰면 들어온다. */
+  bench?: boolean;
+  /** 오더 체인지로 내보낼 서번트. 스킬을 다 쓴 뒤 후열 선두와 바꾼다. */
+  swapOut?: boolean;
 }
 
 /** 마술예장. 스킬은 서번트 스킬과 같은 형식이며 레벨 10 기준으로 쓴다. */
@@ -72,6 +84,8 @@ export interface TurnLog {
   turn: number; wave: number;
   skills: { who: string; skill: string; target?: string }[];
   nps: { who: string; np: string; hits: { enemy: string; dmg: number; hp: number; kill: boolean }[]; refund: number }[];
+  /** 교체·퇴장 같은 사건 */
+  events?: string[];
 }
 export interface SimResult {
   cleared: boolean; turns: number; killed: number; total: number; log: TurnLog[];

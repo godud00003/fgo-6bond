@@ -10,10 +10,10 @@ import { importLogin, type Roster, type RosterEntry, type Stock } from './engine
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[];
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0, lv1: false, allowDup: true, must: [],
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -167,7 +167,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
       friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
-      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
+      // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
+      mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
     };
     w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
   };
@@ -266,6 +267,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           </label>
           <label>마술예장 (레벨 10 기준)
             <select value={prefs.mc} onChange={(e) => set('mc', Number(e.target.value))}>
+              <option value={-1}>자동 선택 (가장 도움이 되는 것)</option>
               <option value={0}>사용 안 함</option>
               {data.mcs.map((m) => <option key={m.id} value={m.id}>{m.name.replace(/^마술예장 /, '')}</option>)}
             </select>
@@ -285,6 +287,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           </label>
           <label className="check" title="프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성(예: 같은 딜러 2기, 같은 서포터 2기)을 후보에 넣습니다.">
             <input type="checkbox" checked={prefs.allowDup} onChange={(e) => set('allowDup', e.target.checked)} /> 동일 서번트 편성 허용 (프렌드로 같은 서번트 빌리기)
+          </label>
+          <label className="check" title="서포터 하나의 스킬을 다 쓴 뒤 후열의 다른 서포터와 바꾸는 편성도 찾습니다. 오더 체인지가 있는 마술예장(칼데아 전투복, 결전용 칼데아 제복)을 쓸 때만 적용됩니다. 계산이 조금 더 오래 걸립니다.">
+            <input type="checkbox" checked={!!prefs.oc} onChange={(e) => set('oc', e.target.checked)} /> 오더 체인지 사용 (전투복·결전용 제복)
           </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 스킬 2 (시작 NP 20%) 적용</label>
         </div>
@@ -309,14 +314,16 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       {output && quest && (
         <section className="card">
           <h2>3. 추천 파티</h2>
-          <p className="muted small">전투 조합 {output.simulated.toLocaleString()}개를 계산했고, 그중 {prefs.maxTurns}턴 안에 클리어되는 조합은 {output.feasible.toLocaleString()}개입니다.</p>
+          <p className="muted small">전투 조합 {output.simulated.toLocaleString()}개를 계산했고, 그중 {prefs.maxTurns}턴 안에 클리어되는 조합은 {output.feasible.toLocaleString()}개입니다.
+            {output.autoMc !== undefined && (output.autoMc ? ` 마술예장 자동 선택: 예장 없이 안 되는 편성에는 "${output.autoMc}"을(를) 썼습니다.` : ' 마술예장 자동 선택: 도움이 되는 예장이 없었습니다.')}</p>
           {output.note && <div className="warn"><p>{output.note}</p></div>}
           {!output.results.length && !output.note && (
             <div className="warn">
               <p>인연 예장만 끼고 {prefs.maxTurns}턴 안에 보구로 정리할 수 있는 조합을 찾지 못했습니다.</p>
               <p className="small">
                 이 계산기는 보구만 계산하고 시작 NP를 주는 예장을 끼지 않는다고 봅니다. 실제로는 평타로 마무리되는 전투도 여기서는 실패로 나옵니다. 시도해 볼 것:
-                {!prefs.mc && ' 마술예장 고르기(NP 충전·공격력 스킬이 큰 차이를 만듭니다) ·'}
+                {prefs.mc === 0 && ' 마술예장을 자동 선택으로 ·'}
+                {!prefs.oc && ' 오더 체인지 켜기 ·'}
                 {' '}턴 제한 늘리기 · 대미지 난수를 평균으로 · 평타 NP 가정 올리기
                 {prefs.poolMode === 'owned' && ' · 서번트 풀을 전체로 바꿔 가능한 편성 확인'}
               </p>
@@ -381,6 +388,7 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
         <div className="mname">{m.svt ? m.svt.name : '프렌드 (자유)'}</div>
         <div className="small muted">
           {m.friend ? `프렌드 ${m.role === 'dealer' ? '(딜러)' : '서포트'}` : ROLE_KO[m.role]}
+          {m.sub && <b className="sub"> · 교체 투입</b>}{m.swapOut && <b className="sub"> · 오더 체인지로 나감</b>}
           {m.svt && !m.friend && <> · <b className={m.counted ? 'bond' : ''}>{m.counted ? `+${m.bond.toLocaleString()}` : '인연 MAX'}</b></>}
         </div>
       </div>
@@ -396,6 +404,7 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
       </div>
       <div className="line"><span className="tag">전열</span>{r.front.map(member)}</div>
       <div className="line"><span className="tag">후열</span>{r.back.map(member)}</div>
+      {r.mc && <div className="line"><span className="tag">마술예장</span><span className="ce need">{r.mc.name.replace(/^마술예장 /, '')}</span><span className="small muted">이 예장의 스킬을 써야 클리어됩니다 (레벨 10 기준)</span></div>}
       <div className="line ces">
         <span className="tag">예장</span>
         {r.ces.map((c, k) => (
@@ -413,6 +422,7 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
           {r.sim.log.map((t) => (
             <div key={t.turn} className="turn">
               <b>{t.turn}턴</b> <span className="muted small">({t.wave}웨이브)</span>
+              {t.events?.map((e, k) => <div key={`e${k}`} className="np"><b className="sub">{e}</b></div>)}
               {t.skills.length > 0 && <ol>{t.skills.map((s, k) => <li key={k}>{s.who} — {s.skill}{s.target ? ` → ${s.target}` : ''}</li>)}</ol>}
               {t.nps.map((n, k) => (
                 <div key={k} className="np">

@@ -37,8 +37,37 @@ const ids = (list) => (list || []).map((t) => t.id);
 const BUFFS = new Set([
   'upAtk', 'downAtk', 'upCommandall', 'downCommandall', 'upNpdamage', 'downNpdamage', 'upDamage',
   'upDropnp', 'downDropnp', 'downDefence', 'upDefence', 'downDefencecommandall', 'regainNp',
-  'addDamage', 'buffRate',
+  'addDamage', 'buffRate', 'pierceInvincible',
 ]);
+// 적에게 걸리는 버프 중 계산에 넣는 것: 무적(오베론 보구의 단점 — 같은 턴의 뒤따르는 공격이 막힌다)
+const ENEMY_BUFFS = new Set(['invincible']);
+
+// 턴 종료 시 발동하는 효과(selfturnendFunction)가 가리키는 스킬. data/skills/{id}.json 에 받아 둔다.
+const skillsDir = path.join(dataDir, 'skills');
+fs.mkdirSync(skillsDir, { recursive: true });
+async function fetchTriggerSkill(id) {
+  const file = path.join(skillsDir, `${id}.json`);
+  if (fs.existsSync(file)) return;
+  const res = await fetch(`https://api.atlasacademy.io/nice/JP/skill/${id}`);
+  if (!res.ok) { console.warn('trigger skill', id, 'HTTP', res.status); return; }
+  fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+}
+/** 턴 종료 효과를 시뮬레이터용으로 줄인다: NP 증감, 강화 해제, 행동 불능(영구수면) */
+function turnEndFx(id) {
+  const file = path.join(skillsDir, `${id}.json`);
+  if (!fs.existsSync(file)) return [];
+  const out = [];
+  for (const f of JSON.parse(fs.readFileSync(file, 'utf8')).functions || []) {
+    if (f.funcTargetTeam === 'enemy') continue;
+    const sv = f.svals?.[0] || {};
+    if (f.funcType === 'lossNp' || f.funcType === 'gainNp') out.push({ t: f.funcType, v: sv.Value || 0 });
+    else if (f.funcType === 'subState' && !out.some((x) => x.t === 'clear')) out.push({ t: 'clear' });
+    else if ((f.buffs || []).some((b) => b.type === 'donotAct') && sv.Turn === -1) out.push({ t: 'disable' });
+  }
+  // 강화 해제는 행동 불능과 함께 올 때만 옮긴다(다른 스킬의 해제는 약화 해제 등 종류가 달라 구분할 수 없다)
+  if (!out.some((x) => x.t === 'disable')) return out.filter((x) => x.t !== 'clear');
+  return out;
+}
 const DAMAGE = new Set([
   'damageNp', 'damageNpIndividual', 'damageNpPierce', 'damageNpIndividualSum', 'damageNpStateIndividualFix',
   'damageNpHpratioLow', 'damageNpRare', 'damageNpAndOrCheckIndividuality', 'damageNpBattlePointPhase',
@@ -57,7 +86,10 @@ function compactFn(f, levels) {
   let buffs;
   if (f.funcType === 'addState' || f.funcType === 'addStateShort') {
     // HP가 일정 이하일 때만 켜지는 버프는 뺀다(시뮬레이터는 피해를 받지 않는다고 본다)
-    buffs = f.buffs.filter((b) => BUFFS.has(b.type) && b.script?.HP_LOWER === undefined).map((b) => {
+    const toEnemy = /^enemy/.test(f.funcTargetType);
+    const turnEnd = f.buffs.filter((b) => b.type === 'selfturnendFunction' && !toEnemy)
+      .map(() => ({ t: 'turnEnd', te: turnEndFx(f.svals[0]?.Value) })).filter((b) => b.te.length);
+    buffs = f.buffs.filter((b) => (BUFFS.has(b.type) || (toEnemy && ENEMY_BUFFS.has(b.type))) && b.script?.HP_LOWER === undefined).map((b) => {
       const o = { t: b.type };
       // 보유자가 특정 특성(또는 필드 특성)을 가질 때만 켜지는 버프
       const need = [b.script?.INDIVIDUALITIE, ...(b.script?.INDIVIDUALITIE_OR || [])].filter(Boolean).map((t) => t.id);
@@ -69,8 +101,9 @@ function compactFn(f, levels) {
       if (ur?.length) o.ur = ids(ur);
       return o;
     });
+    buffs.push(...turnEnd);
     if (!buffs.length) return null;
-  } else if (!isDamage && !['gainNp', 'lossNp', 'shortenSkill'].includes(f.funcType)) {
+  } else if (!isDamage && !['gainNp', 'lossNp', 'shortenSkill', 'forceInstantDeath', 'replaceMember'].includes(f.funcType)) {
     return null;
   }
   if (f.svals[0]?.StarHigher) return null; // 스타가 일정 수 이상일 때만 발동(스타는 계산하지 않는다)
@@ -112,6 +145,8 @@ function compactSkill(k, levels) {
   const o = { name: k.name, cd: k.coolDown, fn: blocked ? [] : pickSelection(k.functions.map((f) => compactFn(f, levels)).filter(Boolean)) };
   if (sc.battleStartRemainingTurn) o.init = sc.battleStartRemainingTurn; // 배틀 개시 시 바로 쓸 수 없는 스킬의 선쿨타임
   if (sc.NP_HIGHER) o.needNp = sc.NP_HIGHER;                             // NP가 일정 % 이상이어야 쓸 수 있는 스킬
+  // 대상을 턴 종료 후 행동 불능으로 만드는 스킬(오베론의 꿈의 끝): 마무리용으로만 써야 한다
+  if (o.fn.some((f) => (f.b || []).some((b) => (b.te || []).some((x) => x.t === 'disable')))) o.fin = true;
   return o;
 }
 
@@ -140,6 +175,16 @@ function traitsByStage(s) {
 const best = (list) => list.reduce((a, b) => (b.priority > a.priority || (b.priority === a.priority && b.id > a.id) ? b : a));
 
 const rawServants = load('KR_nice_servant.json');
+// 턴 종료 발동 스킬을 미리 받아 둔다(--download 일 때만 네트워크 사용)
+if (process.argv.includes('--download')) {
+  const need = new Set();
+  for (const s of rawServants) {
+    for (const k of [...s.skills, ...s.noblePhantasms]) for (const f of k.functions) {
+      if ((f.buffs || []).some((b) => b.type === 'selfturnendFunction') && f.svals?.[0]?.Value) need.add(f.svals[0].Value);
+    }
+  }
+  for (const id of need) await fetchTriggerSkill(id);
+}
 const servants = [];
 for (const s of rawServants) {
   if (!(s.type === 'normal' || s.type === 'heroine') || s.collectionNo <= 0) continue;
@@ -159,6 +204,9 @@ for (const s of rawServants) {
       name: n.name, card: { 1: 'arts', 2: 'buster', 3: 'quick' }[n.card] || n.card, gain: n.npGain.np[0], dist: n.npDistribution, fn,
       dmg: !!dmgFn, aoe: dmgFn ? dmgFn.tg === 'enemyAll' : false,
     };
+    // 보구 사용 후 퇴장: 자신이 죽거나(아라쉬 등), 다른 아군 1기를 제물로 쓴다(진궁)
+    const death = fn.find((f) => f.t === 'forceInstantDeath');
+    if (death) np.dies = death.tg === 'self' ? 'self' : 'ally';
   }
   const passive = [];
   for (const p of s.classPassive) {

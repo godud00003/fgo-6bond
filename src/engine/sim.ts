@@ -1,6 +1,7 @@
 // 보구만으로 적을 정리할 수 있는지 판정하는 간이 전투 시뮬레이터.
 // 평타 대미지, 적의 행동(피격 NP, 디버프, 사망), 적 패시브·내성, 오버차지는 다루지 않는다.
 // 평타로 얻는 NP는 계산하지 않고, 옵션(cardNp)으로 준 가정치만 더한다.
+// 후열: 전열이 퇴장(보구의 즉사 효과)하거나 오더 체인지를 쓰면 후열 선두가 들어온다.
 import type { ActorCfg, BuffDef, EnemyDef, Fn, QuestData, Rel, Servant, SimResult, Skill, Sv, TurnLog } from './types.ts';
 
 const CARD_TRAIT: Record<string, number> = { arts: 4001, buster: 4002, quick: 4003 };
@@ -10,10 +11,11 @@ const isCardTrait = (id: number) => id >= 4001 && id <= 4008;
 const NP_CARD_TRAIT = 4007;
 
 interface Buff { t: string; val: number; turn: number; count: number; d: BuffDef }
-interface Actor { cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[]; fired: boolean }
+interface Actor { cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[]; fired: boolean; /** 영구수면 등으로 더는 행동할 수 없다 */ disabled?: boolean }
 interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean; summoned?: boolean }
 interface State {
-  actors: Actor[]; field: Enemy[]; reserve: Enemy[]; wave: number; quest: QuestData;
+  actors: Actor[]; /** 후열에서 대기 중인 서번트(앞에서부터 들어온다) */ bench: Actor[];
+  field: Enemy[]; reserve: Enemy[]; wave: number; quest: QuestData;
   rel: Rel; roll: number; killed: number; broken: number;
   /** 마술예장 스킬을 쓰는 가상의 행동 주체(전투에는 참가하지 않는다) */
   master: Actor | null;
@@ -31,10 +33,13 @@ export interface SimOptions extends SimExtra { maxTurns: number; roll: number; m
 const svAt = (fn: Fn, idx: number): Sv => (Array.isArray(fn.sv) ? fn.sv[Math.min(idx, fn.sv.length - 1)] : fn.sv);
 const hasAny = (list: number[] | undefined, set: number[]) => !list || !list.length || list.some((x) => set.includes(x));
 
+const cloneActor = (a: Actor): Actor => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), fired: a.fired, disabled: a.disabled, buffs: a.buffs.map((b) => ({ ...b })) });
+
 function cloneState(s: State): State {
   return {
     ...s,
-    actors: s.actors.map((a) => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), fired: a.fired, buffs: a.buffs.map((b) => ({ ...b })) })),
+    actors: s.actors.map(cloneActor),
+    bench: s.bench.map(cloneActor),
     master: s.master && { ...s.master, cd: s.master.cd.slice(), buffs: [] },
     field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, summoned: e.summoned, buffs: e.buffs.map((b) => ({ ...b })) })),
     reserve: s.reserve.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: [] })),
@@ -136,8 +141,9 @@ function mods(att: Actor, e: Enemy, card: string): Mods {
       case 'downAtk': m.atk -= v; break;
       case 'upDamage': m.power += v; break;
       case 'upNpdamage': {
+        // 보구 위력 UP 부스트(오베론의 꿈의 끝)는 중복되지 않는다: 가장 큰 것 하나만 적용
         let boost = 0;
-        for (const r of rates) if (r.d.ur?.some((x) => b.d.v?.includes(x))) boost += r.val / 1000;
+        for (const r of rates) if (r.d.ur?.some((x) => b.d.v?.includes(x))) boost = Math.max(boost, r.val / 1000);
         m.np += v * (1 + boost);
         break;
       }
@@ -176,7 +182,15 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
   let refund = 0;
   a.gauge = 0;
   a.fired = true;
+  const leaving: Actor[] = []; // 이 보구로 퇴장하는 아군
+  const pierce = a.buffs.some((b) => b.t === 'pierceInvincible');
   for (const fn of np.fn) {
+    if (fn.t === 'forceInstantDeath') {
+      // 자신이 죽거나(아라쉬 등), 선두의 다른 아군 1기를 제물로 쓴다(진궁). 영구수면 상태의 아군은 제물이 될 수 없다.
+      const victim = fn.tg === 'self' ? a : s.actors.find((x) => x !== a && !x.disabled);
+      if (victim && !leaving.includes(victim)) leaving.push(victim);
+      continue;
+    }
     if (!fn.t.startsWith('damageNp')) { applyFn(s, a, fn, a.cfg.npLv - 1, a); continue; }
     const sv = svAt(fn, a.cfg.npLv - 1);
     const targets = fn.tg === 'enemyAll' ? s.field.slice() : (() => { const e = pickEnemy(s); return e ? [e] : []; })();
@@ -186,7 +200,9 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
       const classAtk = (s.rel.classAttack[svt.cls] ?? 1000) / 1000;
       const affinity = (s.rel.classRelation[svt.cls]?.[e.def.cls] ?? 1000) / 1000;
       const attr = (s.rel.attribute[svt.attr]?.[e.def.attr] ?? 1000) / 1000;
-      const dmg = Math.floor(
+      // 무적 상태의 적에게는 대미지가 들어가지 않는다(오베론 보구에 맞은 적은 그 턴 동안 무적)
+      const blocked = !pierce && e.buffs.some((b) => b.t === 'invincible');
+      const dmg = blocked ? 0 : Math.floor(
         a.cfg.atk * ((sv.Value ?? 0) / 1000) * CARD_DMG[np.card] * Math.max(0, 1 + m.card) * classAtk * affinity * attr * 0.23 *
         Math.max(0, 1 + m.atk) * Math.max(0.001, 1 + m.power + m.np) * superEffective(fn, sv, e.def) * s.roll,
       ) + m.add;
@@ -217,14 +233,29 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
   for (const b of a.buffs) if (b.count > 0 && CONSUMED.has(b.t)) b.count--;
   a.buffs = a.buffs.filter((b) => b.count !== 0);
   log?.nps.push(entry);
+  for (const v of leaving) leave(s, v, log);
 }
 
-const dealers = (s: State) => s.actors.filter((a) => a.cfg.role === 'dealer' && a.cfg.svt.np?.dmg);
+/** 전열에서 퇴장시키고 후열 선두를 그 자리에 들인다. 들어온 서번트는 다음 턴부터 행동한다. */
+function leave(s: State, a: Actor, log?: TurnLog) {
+  const i = s.actors.indexOf(a);
+  if (i < 0) return;
+  const next = s.bench.shift();
+  if (next) s.actors[i] = next; else s.actors.splice(i, 1);
+  if (log) (log.events ??= []).push(next ? `${a.cfg.svt.name} 퇴장 → ${next.cfg.svt.name} 등장` : `${a.cfg.svt.name} 퇴장`);
+}
+
+/** 적에게 무적을 거는 보구(오베론)는 같은 턴의 다른 보구를 막으므로 맨 뒤에 쏜다 */
+const blocksLater = (a: Actor) => a.cfg.svt.np!.fn.some((f) => f.tg.startsWith('enemy') && f.b?.some((b) => b.t === 'invincible'));
+
+const dealers = (s: State) => s.actors.filter((a) => a.cfg.role === 'dealer' && a.cfg.svt.np?.dmg && !a.disabled);
 
 /** 준비된 딜러의 보구를 차례로 발동한다. 필드가 비면 남은 보구는 아낀다. */
 function npPhase(s: State, log?: TurnLog) {
-  for (const a of dealers(s)) {
-    if (a.gauge < 10000 || !alive(s).length) continue;
+  const order = dealers(s).sort((x, y) => Number(blocksLater(x)) - Number(blocksLater(y)));
+  for (const a of order) {
+    // 앞선 보구의 제물이 되어 이미 퇴장했을 수 있다
+    if (!s.actors.includes(a) || a.gauge < 10000 || !alive(s).length) continue;
     fireNp(s, a, log);
   }
 }
@@ -254,6 +285,7 @@ const hasCharge = (r: SkillRef) => skillFns(r).some((f) => f.t === 'gainNp');
 function available(s: State): SkillRef[] {
   const out: SkillRef[] = [];
   for (const a of s.master ? [...s.actors, s.master] : s.actors) {
+    if (a.disabled) continue;
     a.cfg.svt.skills.forEach((sk, i) => {
       if (a.cd[i] !== 0) return;
       const lv = a.cfg.skillLvs?.[i] ?? a.cfg.skillLv;
@@ -295,12 +327,43 @@ function reachable(s: State, d: Actor): boolean {
   return d.gauge + available(s).reduce((sum, r) => sum + chargeFor(r, d), 0) >= 10000;
 }
 
+/**
+ * 대상을 턴 종료 후 행동 불능으로 만드는 스킬(오베론의 꿈의 끝)을 지금 써도 되는가.
+ * 마지막 웨이브이거나, 대상이 어차피 이번 보구로 퇴장하는 서번트일 때만 쓴다.
+ */
+function finOk(s: State, r: SkillRef, target: Actor): boolean {
+  if (!r.a.cfg.svt.skills[r.i].fin) return true;
+  return s.wave >= s.quest.waves.length - 1 || target.cfg.svt.np?.dies === 'self';
+}
+
+/**
+ * 오더 체인지: 내보내기로 정한 서번트의 스킬을 모두 쓴 뒤 후열 선두와 바꾼다.
+ * 들어온 서번트는 같은 턴에 바로 스킬을 쓸 수 있다.
+ */
+function orderChange(s: State, log: TurnLog) {
+  const m = s.master;
+  if (!m || !s.bench.length) return;
+  const oc = m.cfg.svt.skills.findIndex((sk) => sk.fn.some((f) => f.t === 'replaceMember'));
+  if (oc < 0 || m.cd[oc] !== 0) return;
+  const out = s.actors.find((a) => a.cfg.swapOut && !a.disabled);
+  if (!out) return;
+  const target = dealers(s)[0] ?? s.actors.find((a) => a !== out) ?? out;
+  for (const r of available(s)) if (r.a === out && finOk(s, r, target) && r.a.cfg.svt.skills[r.i].fn.length) useSkill(s, r, target, log);
+  const next = s.bench.shift()!;
+  s.actors[s.actors.indexOf(out)] = next;
+  s.bench.push(out);
+  const sk = m.cfg.svt.skills[oc];
+  m.cd[oc] = sk.cd[Math.min(10, sk.cd.length) - 1];
+  (log.events ??= []).push(`오더 체인지: ${out.cfg.svt.name}의 스킬을 쓴 뒤 ${next.cfg.svt.name}와(과) 교체`);
+}
+
 function playTurn(s: State, mode: 'lazy' | 'eager', log: TurnLog) {
+  orderChange(s, log);
   const ds = dealers(s);
   if (!ds.length) return;
   const main = ds.find((d) => reachable(s, d));
   const order = (list: SkillRef[], d: Actor) =>
-    list.sort((x, y) => Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
+    list.filter((r) => finOk(s, r, d)).sort((x, y) => Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
   if (mode === 'eager' && main) {
     for (const r of order(available(s).filter((r) => hasBuff(r) && !hasCharge(r)), main)) useSkill(s, r, main, log);
   }
@@ -324,10 +387,25 @@ function endTurn(s: State): boolean {
     if (!a.fired && s.cardNp) a.gauge = Math.min(30000, a.gauge + s.cardNp);
     a.fired = false;
     for (const b of a.buffs) if (b.t === 'regainNp') a.gauge = Math.min(30000, a.gauge + b.val);
+    // 턴 종료 시 발동하는 효과: NP 증감, 강화 해제 + 행동 불능(오베론의 꿈의 끝)
+    let clear = false;
+    for (const b of a.buffs) {
+      if (b.t !== 'turnEnd' || !b.d.te) continue;
+      for (const fx of b.d.te) {
+        if (fx.t === 'gainNp') a.gauge = Math.min(30000, a.gauge + (fx.v ?? 0));
+        else if (fx.t === 'lossNp') a.gauge = Math.max(0, a.gauge - (fx.v ?? 0));
+        else if (fx.t === 'clear') clear = true;
+        else if (fx.t === 'disable') a.disabled = true;
+      }
+      if (b.count > 0) b.count--;
+    }
+    // 강화 해제: 패시브(무기한)만 남긴다
+    if (clear) a.buffs = a.buffs.filter((b) => b.turn === -1 && b.count === -1 && b.t !== 'turnEnd');
     for (const b of a.buffs) if (b.turn > 0) b.turn--;
-    a.buffs = a.buffs.filter((b) => b.turn !== 0);
+    a.buffs = a.buffs.filter((b) => b.turn !== 0 && b.count !== 0);
     a.cd = a.cd.map((c) => Math.max(0, c - 1));
   }
+  for (const a of s.bench) a.cd = a.cd.map((c) => Math.max(0, c - 1));
   s.field = s.field.filter((e) => !e.dead);
   for (const e of s.field) {
     for (const b of e.buffs) if (b.turn > 0) b.turn--;
@@ -348,17 +426,21 @@ function masterActor(skills: Skill[]): Actor {
   return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false };
 }
 
+// 선쿨타임이 있는 스킬은 그만큼 기다려야 쓸 수 있다
+const mkActor = (cfg: ActorCfg): Actor => ({
+  cfg, gauge: cfg.startNp, buffs: [], fired: false,
+  cd: cfg.svt.skills.map((sk, i) => { const lv = cfg.skillLvs?.[i] ?? cfg.skillLv; return sk.init?.[Math.min(lv, sk.init.length) - 1] ?? 0; }),
+});
+
+/** front: 편성 전체. bench 표시가 있는 서번트는 후열에서 시작한다. */
 export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimOptions): SimResult {
   const s: State = {
-    // 선쿨타임이 있는 스킬은 그만큼 기다려야 쓸 수 있다
-    actors: front.map((cfg) => ({
-      cfg, gauge: cfg.startNp, buffs: [], fired: false,
-      cd: cfg.svt.skills.map((sk, i) => { const lv = cfg.skillLvs?.[i] ?? cfg.skillLv; return sk.init?.[Math.min(lv, sk.init.length) - 1] ?? 0; }),
-    })),
+    actors: front.filter((c) => !c.bench).map(mkActor),
+    bench: front.filter((c) => c.bench).map(mkActor),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
     master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0,
   };
-  for (const a of s.actors) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
+  for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   const total = quest.waves.reduce((n, w) => n + w.length, 0);
   const log: TurnLog[] = [];
   const bars = quest.waves.reduce((n, w) => n + w.reduce((m, e) => m + e.bars.length, 0), 0);
