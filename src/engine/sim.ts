@@ -67,6 +67,24 @@ const countIndiv = (traits: number[], buffs: Buff[], list: number[]) =>
   list.filter((t) => traits.includes(t)).length + buffs.filter((b) => b.d.v?.some((x) => list.includes(x))).length;
 const hasAny = (list: number[] | undefined, set: number[]) => !list || !list.length || list.some((x) => set.includes(x));
 
+// 전투 기록에 쓰는 이름. 프렌드는 '(프렌드)'를 붙이고, 이름이 같은 다른 서번트가 함께 있으면 클래스로 구분한다.
+const labels = new WeakMap<ActorCfg, string>();
+const nameOf = (a: Actor) => labels.get(a.cfg) ?? a.cfg.svt.name;
+const CLASS_LABEL: Record<string, string> = {
+  saber: '세이버', archer: '아처', lancer: '랜서', rider: '라이더', caster: '캐스터', assassin: '어새신', berserker: '버서커',
+  shielder: '실더', ruler: '룰러', avenger: '어벤저', alterEgo: '얼터에고', moonCancer: '문캔서', foreigner: '포리너', pretender: '프리텐더', beast: '비스트',
+};
+function setLabels(lineup: ActorCfg[]) {
+  for (const c of lineup) {
+    const twins = lineup.filter((x) => x !== c && x.svt.name === c.svt.name);
+    let label = c.svt.name;
+    // 이름만 같은 다른 서번트(예: 세이버와 랜서 알트리아)는 클래스를 붙인다
+    if (twins.some((x) => x.svt.no !== c.svt.no)) label += `[${CLASS_LABEL[c.svt.cls] ?? c.svt.cls}]`;
+    if (c.friend) label += '(프렌드)';
+    labels.set(c, label);
+  }
+}
+
 const cloneActor = (a: Actor): Actor => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), fired: a.fired, disabled: a.disabled, reload: a.reload, reloaded: a.reloaded.slice(), buffs: a.buffs.map((b) => ({ ...b })) });
 
 function cloneState(s: State): State {
@@ -270,7 +288,7 @@ function fireNp(s: State, a: Actor, log?: TurnLog, chain = 0) {
   const np = a.cfg.svt.np!;
   // 오버차지: NP 100%마다 1단계(최대 3) + 보구 연계 순서 + 오버차지 UP 버프, 최대 5단계
   const oc = Math.max(1, Math.min(5, Math.min(3, Math.floor(a.gauge / 10000)) + chain + a.buffs.reduce((n, b) => n + (b.t === 'upChagetd' ? b.val : 0), 0)));
-  const entry = { who: a.cfg.svt.name, np: np.name, hits: [] as TurnLog['nps'][0]['hits'], refund: 0 };
+  const entry = { who: nameOf(a), np: np.name, hits: [] as TurnLog['nps'][0]['hits'], refund: 0 };
   let refund = 0;
   a.gauge = 0;
   a.fired = true;
@@ -336,7 +354,7 @@ function leave(s: State, a: Actor, log?: TurnLog) {
   if (i < 0) return;
   const next = s.bench.shift();
   if (next) s.actors[i] = next; else s.actors.splice(i, 1);
-  if (log) (log.events ??= []).push(next ? `${a.cfg.svt.name} 퇴장 → ${next.cfg.svt.name} 등장` : `${a.cfg.svt.name} 퇴장`);
+  if (log) (log.events ??= []).push(next ? `${nameOf(a)} 퇴장 → ${nameOf(next)} 등장` : `${nameOf(a)} 퇴장`);
 }
 
 /** 적에게 무적을 거는 보구(오베론)는 같은 턴의 다른 보구를 막으므로 맨 뒤에 쏜다 */
@@ -404,7 +422,7 @@ function useSkill(s: State, r: SkillRef, target: Actor, log?: TurnLog) {
   if (r.a.reload > 0 && !r.a.reloaded[r.i]) { r.a.cd[r.i] = Math.max(0, r.a.cd[r.i] - 1); r.a.reload--; r.a.reloaded[r.i] = true; }
   s.used++;
   const needsTarget = sk.fn.some((f) => f.tg === 'ptOne');
-  log?.skills.push({ who: r.a.cfg.svt.name, skill: sk.name, target: needsTarget ? target.cfg.svt.name : undefined });
+  log?.skills.push({ who: nameOf(r.a), skill: sk.name, target: needsTarget ? nameOf(target) : undefined });
 }
 
 /** 낭비가 가장 적은 NP 충전 스킬 조합으로 대상의 게이지를 100%까지 채운다. */
@@ -456,7 +474,7 @@ function orderChange(s: State, log: TurnLog) {
   s.bench.push(out);
   const sk = m.cfg.svt.skills[oc];
   m.cd[oc] = sk.cd[Math.min(10, sk.cd.length) - 1];
-  (log.events ??= []).push(`오더 체인지: ${out.cfg.svt.name}의 스킬을 쓴 뒤 ${next.cfg.svt.name}와(과) 교체`);
+  (log.events ??= []).push(`오더 체인지: ${nameOf(out)}의 스킬을 쓴 뒤 ${nameOf(next)}와(과) 교체`);
 }
 
 /** 스킬이 대상 c에게 쓸모가 있는가: 남의 자기 전용 스킬은 c에게 아무 효과가 없다 */
@@ -609,6 +627,7 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
     master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0, expend: null,
   };
+  setLabels(front);
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   const total = quest.waves.reduce((n, w) => n + w.length, 0);
   const log: TurnLog[] = [];
