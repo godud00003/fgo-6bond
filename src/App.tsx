@@ -4,15 +4,15 @@ import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './
 import type { BondCE, QuestData, Rel, Servant, War } from './engine/types.ts';
 
 interface Data { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel }
-interface RosterEntry { owned: boolean; npLv: number; lv: 'max' | '100' | '120'; skillLv: number; bondMax: boolean }
+interface RosterEntry { owned: boolean; npLv: number; lv: 'max' | '100' | '120'; skillLv: number; bondMax: boolean; bond15?: boolean }
 type Roster = Record<number, RosterEntry>;
 type Stock = Record<number, { count: number; mlb: boolean }>;
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 115, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5,
+  poolMode: 'all', maxTurns: 3, costCap: 115, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -90,7 +90,7 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
     const useOwn = !!r?.owned;
     out.push({
       svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn ? r.skillLv : 10,
-      atk: svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: r?.bondMax ? 0 : 1,
+      atk: svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
     });
   }
   return out;
@@ -142,7 +142,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const [fNo, fMlb] = prefs.friendCe.split(':');
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
-      friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10,
+      friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
     };
     w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
   };
@@ -229,6 +229,11 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           <label>포우 ATK 강화
             <select value={prefs.fou} onChange={(e) => set('fou', Number(e.target.value))}>
               <option value={0}>없음</option><option value={1000}>+1000</option><option value={2000}>+2000</option>
+            </select>
+          </label>
+          <label>찻주전자
+            <select value={prefs.teapot} onChange={(e) => set('teapot', Number(e.target.value))}>
+              <option value={1}>사용 안 함</option><option value={2}>인연 2배</option><option value={3}>인연 3배</option>
             </select>
           </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 스킬 2 (시작 NP 20%) 적용</label>
@@ -327,7 +332,7 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
 
 // ------------------------------------------------------------------ 내 서번트
 
-const NEW_ENTRY: RosterEntry = { owned: true, npLv: 1, lv: 'max', skillLv: 10, bondMax: false };
+const NEW_ENTRY: RosterEntry = { owned: true, npLv: 1, lv: 'max', skillLv: 10, bondMax: false, bond15: false };
 
 function RosterTab({ data, roster, setRoster }: { data: Data; roster: Roster; setRoster: (v: Roster | ((p: Roster) => Roster)) => void }) {
   const [q, setQ] = useState('');
@@ -352,7 +357,7 @@ function RosterTab({ data, roster, setRoster }: { data: Data; roster: Roster; se
     <main>
       <section className="card">
         <h2>내 서번트</h2>
-        <p className="muted small">보유한 서번트를 체크하세요. "인연 MAX"로 표시한 서번트는 전투에는 쓰지만 인연 합계에서 빼고, 인연을 받는 자리에는 넣지 않습니다. 이 브라우저에 저장됩니다.</p>
+        <p className="muted small">보유한 서번트를 체크하세요. "인연 MAX"로 표시한 서번트는 전투에는 쓰지만 인연 합계에서 빼고, 인연을 받는 자리에는 넣지 않습니다. "인연 15"로 표시한 서번트는 파티에 있으면 다른 파티원 전원의 인연이 25% 늘어납니다. 이 브라우저에 저장됩니다.</p>
         <div className="row">
           <input className="grow" placeholder="이름 검색" value={q} onChange={(e) => setQ(e.target.value)} />
           <select value={cls} onChange={(e) => setCls(e.target.value)}>
@@ -388,7 +393,8 @@ function RosterTab({ data, roster, setRoster }: { data: Data; roster: Roster; se
                         {[10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map((n) => <option key={n} value={n}>{n}</option>)}
                       </select>
                     </label>
-                    <label className="check"><input type="checkbox" checked={r.bondMax} onChange={(e) => upd(s.no, { bondMax: e.target.checked })} /> 인연 MAX</label>
+                    <label className="check"><input type="checkbox" checked={r.bondMax || !!r.bond15} disabled={!!r.bond15} onChange={(e) => upd(s.no, { bondMax: e.target.checked })} /> 인연 MAX</label>
+                    <label className="check"><input type="checkbox" checked={!!r.bond15} onChange={(e) => upd(s.no, { bond15: e.target.checked })} /> 인연 15</label>
                   </div>
                 )}
               </div>

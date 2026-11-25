@@ -28,7 +28,7 @@ quest.waves.forEach((w, i) => console.log(' wave', i + 1, w.map((e) => `${e.name
 const npDefault = (s: Servant) => (s.rarity >= 5 ? 1 : s.rarity === 4 ? 2 : 5);
 const pool: PoolEntry[] = servants.map((s) => ({ svt: s, npLv: npDefault(s), skillLv: 10, atk: s.atk.max + 1000, weight: 1 }));
 const stock: CEStock[] = ces.map((ce) => ({ ce, count: 1, mlb: true }));
-const st = { maxTurns: Number(process.argv[4] || 3), costCap: 115, roll: 0.9, startNp: 2000, friendCe: null, topN: 5 };
+const st = { maxTurns: Number(process.argv[4] || 3), costCap: 115, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
 const t0 = Date.now();
 const out = search(pool, servants, stock, quest, rel, st);
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0);
