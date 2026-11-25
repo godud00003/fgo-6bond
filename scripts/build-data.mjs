@@ -100,9 +100,6 @@ function traitsByStage(s) {
   return lists.every((l) => l.join() === lists[4].join()) ? undefined : lists;
 }
 
-const CARD_KEY = { 1: 'a', 2: 'b', 3: 'q', arts: 'a', buster: 'b', quick: 'q' };
-const cardStat = (f) => ({ a: f('1', 'arts'), b: f('2', 'buster'), q: f('3', 'quick') });
-
 const best = (list) => list.reduce((a, b) => (b.priority > a.priority || (b.priority === a.priority && b.id > a.id) ? b : a));
 
 const rawServants = load('KR_nice_servant.json');
@@ -140,10 +137,6 @@ for (const s of rawServants) {
     attr: s.attribute, traits: allTraits(s, 4), asc: traitsByStage(s),
     atk: { 1: g[0], max: g[s.lvMax - 1], 100: g[99], 120: g[119] },
     skills, np, passive,
-    // 커맨드 카드: 덱 구성(a/b/q 5장), 카드별 히트 수, 카드별 히트당 NP 획득률
-    deck: (s.cards || []).map((c) => CARD_KEY[c] || '').join(''),
-    hits: cardStat((k) => (s.hitsDistribution?.[k] || []).length),
-    cgain: cardStat((k, name) => s.noblePhantasms.length ? (best(s.noblePhantasms).npGain?.[name]?.[0] ?? 0) : 0),
     face: s.extraAssets?.faces?.ascension?.['1'] || '',
   });
 }

@@ -18,7 +18,6 @@ interface State {
   /** 마술예장 스킬을 쓰는 가상의 행동 주체(전투에는 참가하지 않는다) */
   master: Actor | null;
   cardNp: number;
-  face: boolean;
 }
 
 export interface SimExtra {
@@ -26,8 +25,6 @@ export interface SimExtra {
   mc?: Skill[] | null;
   /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
   cardNp?: number;
-  /** 보구를 쓰고 남은 카드 칸의 평타를 평균 기대치로 계산한다 */
-  face?: boolean;
 }
 export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: 'lazy' | 'eager' }
 
@@ -222,84 +219,16 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
 const dealers = (s: State) => s.actors.filter((a) => a.cfg.role === 'dealer' && a.cfg.svt.np?.dmg);
 
 /** 준비된 딜러의 보구를 차례로 발동한다. 필드가 비면 남은 보구는 아낀다. */
-function npPhase(s: State, log?: TurnLog, withFace = true) {
-  let used = 0;
-  let first: string | null = null;
+function npPhase(s: State, log?: TurnLog) {
   for (const a of dealers(s)) {
     if (a.gauge < 10000 || !alive(s).length) continue;
     fireNp(s, a, log);
-    if (!used) first = a.cfg.svt.np!.card;
-    used++;
   }
-  if (s.face && withFace) facePhase(s, used, first, log);
 }
 function wouldClear(s: State): boolean {
   const c = cloneState(s);
-  // 스킬을 더 쓸지 판단할 때는 보구만 본다(평타까지 넣으면 계산량이 10배가 된다). 그래서 평타로 마무리될 상황에서도 버프를 조금 더 쓰는 쪽으로 기운다.
-  npPhase(c, undefined, false);
+  npPhase(c);
   return !alive(c).length;
-}
-
-// ---------------------------------------------------------------- 평타
-// 카드는 15장 덱에서 무작위로 나오므로 정확히 계산할 수 없다. 여기서는 보구를 먼저 내고 남은 칸마다
-// "덱 15장 중 아무 카드 1장"의 평균 기대치를 낸다고 본다. 유리한 카드를 고르는 이점, 크리티컬,
-// 엑스트라 어택, 오버킬 보너스는 넣지 않으므로 실제보다 낮게 나오는 편이다.
-const FACE_KEY: Record<string, string> = { a: 'arts', b: 'buster', q: 'quick' };
-const POS_DMG = [1, 1.2, 1.4];
-const POS_NP = [1, 1.5, 2];
-const DECK_SIZE = 15; // 전열 3기 × 5장. 시뮬레이션에 없는 전열(인연용 서번트)의 카드는 0으로 친다.
-
-const deckCounts = new Map<string, Record<string, number>>();
-function deckCount(deck: string, k: string): number {
-  let c = deckCounts.get(deck);
-  if (!c) { c = { a: 0, b: 0, q: 0 }; for (const ch of deck) if (ch in c) c[ch]++; deckCounts.set(deck, c); }
-  return c[k];
-}
-
-function facePhase(s: State, used: number, first: string | null, log?: TurnLog) {
-  const out: NonNullable<TurnLog['face']> = { cards: 0, hits: [], np: 0 };
-  // 버프 보정은 카드 위치와 무관하므로 대상이 바뀔 때만 다시 구한다
-  let cached: Enemy | undefined;
-  const memo = new Map<string, Mods>();
-  for (let pos = used; pos < 3; pos++) {
-    // 약한 적부터 마무리한다
-    const target = alive(s).reduce<Enemy | undefined>((a, e) => (!a || e.bars[0] < a.bars[0] ? e : a), undefined);
-    if (!target) break;
-    if (target !== cached) { memo.clear(); cached = target; }
-    let dmg = 0;
-    for (let ai = 0; ai < s.actors.length; ai++) {
-      const a = s.actors[ai];
-      const svt = a.cfg.svt;
-      const classAtk = (s.rel.classAttack[svt.cls] ?? 1000) / 1000;
-      const affinity = (s.rel.classRelation[svt.cls]?.[target.def.cls] ?? 1000) / 1000;
-      const attr = (s.rel.attribute[svt.attr]?.[target.def.attr] ?? 1000) / 1000;
-      let gain = 0;
-      for (const k of 'abq') {
-        const n = deckCount(svt.deck, k); // 같은 종류의 카드는 한 번만 계산한다
-        if (!n) continue;
-        const card = FACE_KEY[k];
-        let m = memo.get(ai + k);
-        if (!m) memo.set(ai + k, (m = mods(a, target, card)));
-        const cardMul = CARD_DMG[card] * POS_DMG[pos] * Math.max(0, 1 + m.card) + (first === 'buster' ? 0.5 : 0);
-        dmg += (n * (a.cfg.atk * 0.23 * cardMul * classAtk * affinity * attr * s.roll * Math.max(0, 1 + m.atk) * Math.max(0.001, 1 + m.power) + m.add)) / DECK_SIZE;
-        const npMul = CARD_NP[card] * POS_NP[pos] * Math.max(0, 1 + m.card) + (first === 'arts' ? 1 : 0);
-        gain += (n * svt.hits[k as 'a'] * svt.cgain[k as 'a'] * npMul * (target.def.tdRate / 1000) * Math.max(0, 1 + m.gain)) / DECK_SIZE;
-      }
-      a.gauge = Math.min(30000, a.gauge + gain);
-      out.np += gain;
-    }
-    const d = Math.floor(dmg);
-    const before = target.bars[0];
-    let kill = false;
-    if (d >= before) {
-      target.bars.shift();
-      if (!target.summoned) s.broken++;
-      if (!target.bars.length) { target.dead = true; kill = true; if (!target.summoned) s.killed++; }
-    } else target.bars[0] -= d;
-    out.cards++;
-    out.hits.push({ enemy: target.def.name, dmg: d, hp: before, kill });
-  }
-  if (log && out.cards) log.face = out;
 }
 
 interface SkillRef { a: Actor; i: number }
@@ -357,7 +286,7 @@ function reachable(s: State, d: Actor): boolean {
 
 function playTurn(s: State, mode: 'lazy' | 'eager', log: TurnLog) {
   const ds = dealers(s);
-  if (!ds.length) { npPhase(s, log); return; }
+  if (!ds.length) return;
   const main = ds.find((d) => reachable(s, d));
   const order = (list: SkillRef[], d: Actor) =>
     list.sort((x, y) => Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
@@ -381,7 +310,6 @@ function playTurn(s: State, mode: 'lazy' | 'eager', log: TurnLog) {
 function endTurn(s: State): boolean {
   if (s.master) s.master.cd = s.master.cd.map((c) => Math.max(0, c - 1));
   for (const a of s.actors) {
-    a.gauge = Math.floor(a.gauge);
     if (!a.fired && s.cardNp) a.gauge = Math.min(30000, a.gauge + s.cardNp);
     a.fired = false;
     for (const b of a.buffs) if (b.t === 'regainNp') a.gauge = Math.min(30000, a.gauge + b.val);
@@ -405,7 +333,7 @@ function endTurn(s: State): boolean {
 }
 
 function masterActor(skills: Skill[]): Actor {
-  const svt = { id: 0, no: 0, name: '마스터', cls: '', rarity: 0, cost: 0, attr: '', traits: [], atk: { 1: 0, max: 0, 100: 0, 120: 0 }, deck: '', hits: { a: 0, b: 0, q: 0 }, cgain: { a: 0, b: 0, q: 0 }, skills, np: null, passive: [], face: '' } as Servant;
+  const svt = { id: 0, no: 0, name: '마스터', cls: '', rarity: 0, cost: 0, attr: '', traits: [], atk: { 1: 0, max: 0, 100: 0, 120: 0 }, skills, np: null, passive: [], face: '' } as Servant;
   return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false };
 }
 
@@ -413,7 +341,7 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
   const s: State = {
     actors: front.map((cfg) => ({ cfg, gauge: cfg.startNp, buffs: [], cd: cfg.svt.skills.map(() => 0), fired: false })),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
-    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0, face: !!opt.face,
+    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0,
   };
   for (const a of s.actors) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   const total = quest.waves.reduce((n, w) => n + w.length, 0);

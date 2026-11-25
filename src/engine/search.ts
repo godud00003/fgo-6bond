@@ -19,8 +19,6 @@ export interface Settings {
   mc?: Skill[] | null;
   /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
   cardNp?: number;
-  /** 보구를 쓰고 남은 카드 칸의 평타를 평균 기대치로 계산한다 */
-  face?: boolean;
   /** 프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성을 허용한다(기본 허용) */
   allowDup?: boolean;
 }
@@ -57,7 +55,7 @@ export function search(
   const coresAtk: Core[] = [];
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
     ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp, role, friend: true });
-  const extra = { mc: st.mc, cardNp: st.cardNp, face: st.face };
+  const extra = { mc: st.mc, cardNp: st.cardNp };
   const allowDup = st.allowDup !== false;
   const sim1 = (front: ActorCfg[]) => simulateBest(front, quest, rel, st.maxTurns, st.roll, extra);
 
