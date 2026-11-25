@@ -10,10 +10,10 @@ import { importLogin, type Roster, type RosterEntry, type Stock } from './engine
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0, lv1: false,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -107,7 +107,9 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
     out.push({
       svt: stage ? { ...svt, traits: stage } : svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn ? r.skillLv : 10,
       skillLvs: useOwn ? r.skills : undefined, startNp: useOwn ? r.startNp : undefined,
-      atk: useOwn && r.atk ? r.atk : svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
+      // 레벨 1 고정 퀘스트: 레벨 1 ATK + 포우 강화(가져온 서번트는 실제 강화량)
+      atk: prefs.lv1 ? svt.atk[1] + (useOwn && r.fou !== undefined ? r.fou : prefs.fou)
+        : useOwn && r.atk ? r.atk : svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
     });
   }
   return out;
@@ -160,7 +162,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
       friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
-      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: prefs.cardNp,
+      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: prefs.cardNp, lv1: prefs.lv1,
     };
     w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
   };
@@ -272,6 +274,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
             <select value={prefs.teapot} onChange={(e) => set('teapot', Number(e.target.value))}>
               <option value={1}>사용 안 함</option><option value={2}>인연 2배</option><option value={3}>인연 3배</option>
             </select>
+          </label>
+          <label className="check" title="2부 6장의 일부 전투처럼 출전 서번트 전원(프렌드 포함)의 레벨이 1이 되는 기믹. 스킬·보구 레벨은 그대로이고 ATK만 레벨 1 수치로 계산합니다.">
+            <input type="checkbox" checked={prefs.lv1} onChange={(e) => set('lv1', e.target.checked)} /> 전원 레벨 1 고정 (2부 6장 기믹)
           </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 스킬 2 (시작 NP 20%) 적용</label>
         </div>

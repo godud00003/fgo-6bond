@@ -135,7 +135,7 @@ for (const s of rawServants) {
   servants.push({
     id: s.id, no: s.collectionNo, name: s.name, cls: s.className, rarity: s.rarity, cost: s.cost,
     attr: s.attribute, traits: allTraits(s, 4), asc: traitsByStage(s),
-    atk: { max: g[s.lvMax - 1], 100: g[99], 120: g[119] },
+    atk: { 1: g[0], max: g[s.lvMax - 1], 100: g[99], 120: g[119] },
     skills, np, passive,
     face: s.extraAssets?.faces?.ascension?.['1'] || '',
   });

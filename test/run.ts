@@ -26,11 +26,12 @@ console.log('bond', quest.bond, quest.warnings);
 quest.waves.forEach((w, i) => console.log(' wave', i + 1, w.map((e) => `${e.name}(${e.cls},${e.bars.join('/')})`).join(' ')));
 
 const npDefault = (s: Servant) => (s.rarity >= 5 ? 1 : s.rarity === 4 ? 2 : 5);
-const pool: PoolEntry[] = servants.map((s) => ({ svt: s, npLv: npDefault(s), skillLv: 10, atk: s.atk.max + 1000, weight: 1 }));
+const lv1 = !!process.env.LV1; // LV1=1 이면 전원 레벨 1 고정
+const pool: PoolEntry[] = servants.map((s) => ({ svt: s, npLv: npDefault(s), skillLv: 10, atk: (lv1 ? s.atk[1] : s.atk.max) + 1000, weight: 1 }));
 const stock: CEStock[] = ces.map((ce) => ({ ce, count: 1, mlb: true }));
 const mcs: MysticCode[] = j('mcs.json');
 // 환경 변수: MC=마술예장 id, CARDNP=평타 NP 가정(100 = 1%)
-const st = { mc: mcs.find((m) => m.id === Number(process.env.MC))?.skills ?? null, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
+const st = { lv1, mc: mcs.find((m) => m.id === Number(process.env.MC))?.skills ?? null, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
 const t0 = Date.now();
 const out = search(pool, servants, stock, quest, rel, st);
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0);

@@ -332,7 +332,7 @@ function endTurn(s: State): boolean {
 }
 
 function masterActor(skills: Skill[]): Actor {
-  const svt = { id: 0, no: 0, name: '마스터', cls: '', rarity: 0, cost: 0, attr: '', traits: [], atk: { max: 0, 100: 0, 120: 0 }, skills, np: null, passive: [], face: '' } as Servant;
+  const svt = { id: 0, no: 0, name: '마스터', cls: '', rarity: 0, cost: 0, attr: '', traits: [], atk: { 1: 0, max: 0, 100: 0, 120: 0 }, skills, np: null, passive: [], face: '' } as Servant;
   return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false };
 }
 

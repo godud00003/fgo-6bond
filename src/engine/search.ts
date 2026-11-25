@@ -13,6 +13,8 @@ export interface Settings {
   friendCe: { no: number; mlb: boolean } | null; topN: number;
   /** 찻주전자 배수(1 = 미사용). 최종 인연 포인트에 곱해진다. */
   teapot: number;
+  /** 출전 서번트 전원이 레벨 1이 되는 퀘스트(프렌드 포함). 풀의 ATK는 호출하는 쪽에서 이미 레벨 1로 넣는다. */
+  lv1?: boolean;
   /** 마술예장 스킬(없으면 미사용) */
   mc?: Skill[] | null;
   /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
@@ -41,7 +43,7 @@ export function search(
   const cfg = (p: PoolEntry, role: 'dealer' | 'support'): ActorCfg =>
     ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk, startNp: p.startNp ?? st.startNp, role });
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
-    ({ svt: s, npLv: 1, skillLv: 10, atk: s.atk.max + 1000, startNp: st.startNp, role, friend: true });
+    ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp, role, friend: true });
   const extra = { mc: st.mc, cardNp: st.cardNp };
   const sim1 = (front: ActorCfg[]) => simulateBest(front, quest, rel, st.maxTurns, st.roll, extra);
 

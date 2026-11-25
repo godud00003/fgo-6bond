@@ -9,7 +9,7 @@ export type Card = 'arts' | 'buster' | 'quick';
 export interface NP { name: string; card: Card; gain: number; dist: number[]; fn: Fn[]; dmg: boolean; aoe: boolean }
 export interface Servant {
   id: number; no: number; name: string; cls: string; rarity: number; cost: number; attr: string;
-  traits: number[]; atk: { max: number; 100: number; 120: number };
+  traits: number[]; atk: { 1: number; max: number; 100: number; 120: number };
   skills: Skill[]; np: NP | null; passive: Fn[]; face: string;
   /** 영기재림 단계(0~4)별 특성. 단계에 따라 특성이 달라지는 서번트에만 있다. traits는 4단계 기준. */
   asc?: number[][];

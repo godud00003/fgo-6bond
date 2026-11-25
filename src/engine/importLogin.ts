@@ -6,6 +6,8 @@ export interface RosterEntry {
   owned: boolean; npLv: number; lv: 'max' | '100' | '120'; skillLv: number; bondMax: boolean; bond15?: boolean;
   /** 게임에서 가져온 실제 ATK(포우 강화 포함). 있으면 레벨·포우 설정 대신 이 값을 쓴다. */
   atk?: number;
+  /** 포우 ATK 강화량. 레벨 1 고정 퀘스트에서 레벨 1 ATK에 더한다. */
+  fou?: number;
   /** 스킬 1~3의 레벨. 있으면 skillLv 대신 쓴다. */
   skills?: number[];
   /** 어펜드 스킬 2로 얻는 시작 NP (10000 = 100%). 없으면 조건 탭의 설정을 따른다. */
@@ -27,7 +29,7 @@ export interface LoginImport {
 const APPEND2 = [10, 11, 12, 13, 14, 15, 16, 17, 18, 20];
 
 interface UserSvt {
-  id: number; svtId: number; lv: number; atk: number; limitCount: number; dispLimitCount?: number;
+  id: number; svtId: number; lv: number; atk: number; adjustAtk?: number; limitCount: number; dispLimitCount?: number;
   skillLv1: number; skillLv2: number; skillLv3: number; treasureDeviceLv1: number;
 }
 
@@ -79,7 +81,7 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
       owned: true, npLv: Math.max(1, Math.min(5, u.treasureDeviceLv1)),
       lv: u.lv >= 120 ? '120' : u.lv >= 100 ? '100' : 'max',
       skillLv: Math.min(u.skillLv1, u.skillLv2, u.skillLv3), skills: [u.skillLv1, u.skillLv2, u.skillLv3],
-      atk: u.atk, level: u.lv, bond,
+      atk: u.atk, fou: (u.adjustAtk ?? 0) * 10, level: u.lv, bond,
       asc: u.dispLimitCount !== undefined && u.dispLimitCount >= 0 && u.dispLimitCount <= 4 ? u.dispLimitCount : undefined,
       startNp: appendLv > 0 ? APPEND2[Math.min(appendLv, 10) - 1] * 100 : 0,
       bondMax: bond >= bondCap, bond15: bond >= 15,
