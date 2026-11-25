@@ -1,4 +1,6 @@
 node_modules
 dist
+dist-single
+/fgo-bond.html
 /data
 *.zip

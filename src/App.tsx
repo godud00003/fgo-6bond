@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+// 인라인 워커: 파일을 직접 열어도(file://) 동작하도록 워커 코드를 번들 안에 넣는다
+import SearchWorker from './worker.ts?worker&inline';
 import { fetchQuest, namuQuery, resolveQuest, type Candidate } from './engine/quest.ts';
 import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './engine/search.ts';
 import type { BondCE, MysticCode, QuestData, Rel, Servant, War } from './engine/types.ts';
@@ -43,6 +45,9 @@ export default function App() {
   const [prefs, setPrefs] = usePersist<Prefs>('fgo-bond.prefs', DEFAULT_PREFS);
 
   useEffect(() => {
+    // 단일 HTML 배포본에는 게임 데이터가 파일 안에 들어 있다
+    const embedded = (window as unknown as { __FGO_DATA__?: Data }).__FGO_DATA__;
+    if (embedded) { setData(embedded); return; }
     const get = (f: string) => fetch(`${import.meta.env.BASE_URL}data/${f}`).then((r) => {
       if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
       return r.json();
@@ -142,7 +147,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
   const run = () => {
     if (!quest) return;
     worker.current?.terminate();
-    const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+    const w = new SearchWorker();
     worker.current = w;
     setProgress(0); setOutput(null); setErr('');
     w.onmessage = (ev) => {

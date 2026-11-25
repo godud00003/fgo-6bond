@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "single": "node scripts/build-single.mjs",
     "test": "node test/run.ts"
   },
   "dependencies": { "react": "^18.3.1", "react-dom": "^18.3.1" },
