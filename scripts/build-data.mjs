@@ -56,8 +56,12 @@ function compactFn(f, levels) {
   const isDamage = DAMAGE.has(f.funcType);
   let buffs;
   if (f.funcType === 'addState' || f.funcType === 'addStateShort') {
-    buffs = f.buffs.filter((b) => BUFFS.has(b.type)).map((b) => {
+    // HP가 일정 이하일 때만 켜지는 버프는 뺀다(시뮬레이터는 피해를 받지 않는다고 본다)
+    buffs = f.buffs.filter((b) => BUFFS.has(b.type) && b.script?.HP_LOWER === undefined).map((b) => {
       const o = { t: b.type };
+      // 보유자가 특정 특성(또는 필드 특성)을 가질 때만 켜지는 버프
+      const need = [b.script?.INDIVIDUALITIE, ...(b.script?.INDIVIDUALITIE_OR || [])].filter(Boolean).map((t) => t.id);
+      if (need.length) o.si = need;
       if (b.ckSelfIndv?.length) o.cs = ids(b.ckSelfIndv);
       if (b.ckOpIndv?.length) o.co = ids(b.ckOpIndv);
       if (b.vals?.length) o.v = ids(b.vals);
@@ -69,12 +73,45 @@ function compactFn(f, levels) {
   } else if (!isDamage && !['gainNp', 'lossNp', 'shortenSkill'].includes(f.funcType)) {
     return null;
   }
+  if (f.svals[0]?.StarHigher) return null; // 스타가 일정 수 이상일 때만 발동(스타는 계산하지 않는다)
   const svs = f.svals.slice(0, levels).map(pickSv);
   const same = svs.every((s) => JSON.stringify(s) === JSON.stringify(svs[0]));
   const o = { t: f.funcType, tg: f.funcTargetType, sv: same ? svs[0] : svs };
   if (f.functvals?.length) o.tv = ids(f.functvals);
   if (f.funcquestTvals?.length) o.qtv = ids(f.funcquestTvals);
   if (buffs) o.b = buffs;
+  // 선택형 스킬: 여러 효과 중 하나만 고르는 스킬의 선택지 번호
+  if (f.svals[0]?.ActSelectIndex !== undefined) o._sel = f.svals[0].ActSelectIndex;
+  return o;
+}
+
+/** 선택형 스킬은 계산에 가장 도움이 되는 선택지 하나만 남긴다(보구 위력 > 공격력 > 카드 성능 > NP 충전 순으로 수치가 큰 쪽) */
+function pickSelection(fns) {
+  const groups = new Map();
+  for (const f of fns) if (f._sel !== undefined) groups.set(f._sel, [...(groups.get(f._sel) || []), f]);
+  if (!groups.size) return fns;
+  const last = (f) => (Array.isArray(f.sv) ? f.sv[f.sv.length - 1] : f.sv).Value || 0;
+  const score = (list) => Math.max(0, ...list.map((f) => {
+    if (f.t === 'gainNp') return last(f) / 10;
+    const kinds = (f.b || []).map((b) => b.t);
+    if (kinds.includes('upNpdamage')) return last(f) * 1.1;
+    if (kinds.includes('upAtk') || kinds.includes('upDamage')) return last(f);
+    if (kinds.includes('upCommandall')) return last(f) * 0.9;
+    return 0;
+  }));
+  let bestIdx = -1, bestScore = -1;
+  for (const [idx, list] of groups) { const sc = score(list); if (sc > bestScore) { bestScore = sc; bestIdx = idx; } }
+  return fns.filter((f) => f._sel === undefined || f._sel === bestIdx).map(({ _sel, ...f }) => f);
+}
+
+/** 스킬 1개를 앱용으로 변환한다. 선쿨타임·사용 조건을 함께 옮긴다. */
+function compactSkill(k, levels) {
+  const sc = k.script || {};
+  // 스타 수·낮은 HP를 요구하는 스킬은 조건을 계산할 수 없으므로 쓰지 않는 것으로 본다
+  const blocked = sc.STAR_HIGHER !== undefined || sc.HP_PER_LOWER !== undefined;
+  const o = { name: k.name, cd: k.coolDown, fn: blocked ? [] : pickSelection(k.functions.map((f) => compactFn(f, levels)).filter(Boolean)) };
+  if (sc.battleStartRemainingTurn) o.init = sc.battleStartRemainingTurn; // 배틀 개시 시 바로 쓸 수 없는 스킬의 선쿨타임
+  if (sc.NP_HIGHER) o.needNp = sc.NP_HIGHER;                             // NP가 일정 % 이상이어야 쓸 수 있는 스킬
   return o;
 }
 
@@ -111,7 +148,7 @@ for (const s of rawServants) {
     const cands = s.skills.filter((k) => k.num === num);
     if (!cands.length) continue;
     const k = best(cands);
-    skills.push({ name: k.name, cd: k.coolDown, fn: k.functions.map((f) => compactFn(f, 10)).filter(Boolean) });
+    skills.push(compactSkill(k, 10));
   }
   let np = null;
   if (s.noblePhantasms.length) {
@@ -200,7 +237,7 @@ for (const w of load('KR_nice_war.json')) {
 // 보구 대미지나 NP에 영향을 주는 스킬이 하나라도 있는 예장만 남긴다
 const mcs = [];
 for (const m of load('KR_nice_mystic_code.json')) {
-  const skills = m.skills.map((k) => ({ name: k.name, cd: k.coolDown, fn: k.functions.map((f) => compactFn(f, 10)).filter(Boolean) }));
+  const skills = m.skills.map((k) => compactSkill(k, 10));
   if (skills.some((k) => k.fn.length)) mcs.push({ id: m.id, name: m.name, skills });
 }
 

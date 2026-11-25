@@ -2,9 +2,19 @@ export interface Sv {
   Rate?: number; Turn?: number; Count?: number; Value?: number; Value2?: number;
   Correction?: number; Target?: number; TargetRarityList?: number[];
 }
-export interface BuffDef { t: string; cs?: number[]; co?: number[]; v?: number[]; ur?: number[] }
+export interface BuffDef {
+  t: string; cs?: number[]; co?: number[]; v?: number[]; ur?: number[];
+  /** 보유자가 이 특성 중 하나(또는 필드 특성)를 가질 때만 걸리는 버프 */
+  si?: number[];
+}
 export interface Fn { t: string; tg: string; sv: Sv | Sv[]; tv?: number[]; qtv?: number[]; b?: BuffDef[] }
-export interface Skill { name: string; cd: number[]; fn: Fn[] }
+export interface Skill {
+  name: string; cd: number[]; fn: Fn[];
+  /** 배틀 개시 시의 선쿨타임(레벨별) */
+  init?: number[];
+  /** 사용에 필요한 최소 NP(%, 레벨별) */
+  needNp?: number[];
+}
 export type Card = 'arts' | 'buster' | 'quick';
 export interface NP { name: string; card: Card; gain: number; dist: number[]; fn: Fn[]; dmg: boolean; aoe: boolean }
 export interface Servant {

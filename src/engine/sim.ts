@@ -93,7 +93,9 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
   else if (fn.b) {
     for (const d of fn.b) {
       const mk = (): Buff => ({ t: d.t, val: v, turn: sv.Turn ?? -1, count: sv.Count ?? -1, d });
-      for (const a of allies) a.buffs.push(mk());
+      // 특성 조건이 붙은 버프는 보유자나 필드가 그 특성을 가질 때만 건다
+      const ok = (a: Actor) => !d.si?.length || d.si.some((t) => a.cfg.svt.traits.includes(t) || s.quest.fieldTraits.includes(t));
+      for (const a of allies) if (ok(a)) a.buffs.push(mk());
       for (const e of enemies) e.buffs.push(mk());
     }
   }
@@ -250,7 +252,15 @@ const hasCharge = (r: SkillRef) => skillFns(r).some((f) => f.t === 'gainNp');
 
 function available(s: State): SkillRef[] {
   const out: SkillRef[] = [];
-  for (const a of s.master ? [...s.actors, s.master] : s.actors) a.cfg.svt.skills.forEach((_, i) => { if (a.cd[i] === 0) out.push({ a, i }); });
+  for (const a of s.master ? [...s.actors, s.master] : s.actors) {
+    a.cfg.svt.skills.forEach((sk, i) => {
+      if (a.cd[i] !== 0) return;
+      const lv = a.cfg.skillLvs?.[i] ?? a.cfg.skillLv;
+      const need = sk.needNp?.[Math.min(lv, sk.needNp.length) - 1] ?? 0; // NP가 모자라면 쓸 수 없는 스킬
+      if (need && a.gauge < need * 100) return;
+      out.push({ a, i });
+    });
+  }
   return out;
 }
 function useSkill(s: State, r: SkillRef, target: Actor, log?: TurnLog) {
@@ -339,7 +349,11 @@ function masterActor(skills: Skill[]): Actor {
 
 export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimOptions): SimResult {
   const s: State = {
-    actors: front.map((cfg) => ({ cfg, gauge: cfg.startNp, buffs: [], cd: cfg.svt.skills.map(() => 0), fired: false })),
+    // 선쿨타임이 있는 스킬은 그만큼 기다려야 쓸 수 있다
+    actors: front.map((cfg) => ({
+      cfg, gauge: cfg.startNp, buffs: [], fired: false,
+      cd: cfg.svt.skills.map((sk, i) => { const lv = cfg.skillLvs?.[i] ?? cfg.skillLv; return sk.init?.[Math.min(lv, sk.init.length) - 1] ?? 0; }),
+    })),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
     master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0,
   };
