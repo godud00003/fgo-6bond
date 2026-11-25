@@ -9,6 +9,12 @@ npm install
 npm run dev
 ```
 
+## 웹 게시 (다른 사람에게 자동 반영)
+
+`.github/workflows/deploy.yml`이 `main`에 올릴 때마다 빌드해서 GitHub Pages에 게시한다. 주소를 받은 사람은 새로 열기만 하면 최신 프로그램을 쓴다. 하루 한 번은 변경이 없어도 다시 빌드해 최신 게임 데이터를 담는다. 게시된 사이트의 `fgo-bond.html`은 파일 하나짜리 배포본이다.
+
+처음 한 번: GitHub에 공개 저장소를 만들고 `git remote add origin <주소>` → `git push -u origin main`, 저장소 Settings → Pages → Source를 "GitHub Actions"로 바꾼다.
+
 ## 자동 업데이트
 
 앱을 열 때마다 Atlas Academy에 더 새로운 한국 서버 데이터가 있는지 확인하고(`/info`의 KR 시각), 있으면 원본을 브라우저에서 직접 받아 변환한 뒤 그 브라우저의 IndexedDB에 저장한다. 신규 서번트·예장·퀘스트·이벤트가 반영된다. 원본이 80MB쯤이라 10초 안팎이 걸리고, 워커에서 처리해 화면은 멈추지 않는다. 헤더의 "열 때마다 자동 업데이트"로 끌 수 있고 "업데이트 확인"으로 직접 확인할 수도 있다.

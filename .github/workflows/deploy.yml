@@ -1,0 +1,44 @@
+# main에 올리면 자동으로 빌드해서 GitHub Pages에 게시한다.
+# 하루 한 번은 변경이 없어도 다시 빌드해 최신 게임 데이터를 담는다(앱 자체도 열 때마다 데이터를 확인하지만, 처음 여는 사람이 바로 최신을 받게 한다).
+name: 배포
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '30 19 * * *' # 매일 한국 시간 04:30
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 최신 게임 데이터를 받는다. 받지 못하면 저장소에 들어 있는 데이터로 계속한다.
+      - run: npm run data || echo "데이터를 받지 못해 저장소의 데이터를 씁니다"
+      - run: npm run build
+      # 파일 하나짜리 배포본도 같이 올린다(오프라인 보관용)
+      - run: npm run single && cp fgo-bond.html dist/fgo-bond.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
