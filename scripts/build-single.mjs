@@ -30,7 +30,7 @@ const one = (ext) => {
 const safe = (s) => s.replace(/<\/(script|style)/gi, '<\\/$1').replace(/<!--/g, '<\\!--');
 
 const data = {};
-for (const f of ['servants', 'ces', 'wars', 'names', 'rel', 'mcs']) {
+for (const f of ['servants', 'ces', 'wars', 'names', 'rel', 'mcs', 'meta']) {
   data[f] = JSON.parse(fs.readFileSync(path.join(root, 'public', 'data', `${f}.json`), 'utf8'));
 }
 

@@ -21,7 +21,10 @@ const PUNCT = /[-–—~·・,<>《》〈〉()[\]]/g;
 function battles(war: War, quests: QuestRef[]): Candidate[] {
   const out: Candidate[] = [];
   const perSection = new Map<string, number>();
+  const now = Date.now() / 1000;
   for (const q of quests) {
+    // 기간 한정 퀘스트는 지금 열려 있는 것만 보여 준다
+    if (q.open && (now < q.open[0] || now >= q.open[1])) continue;
     const key = q.type === 'main' ? `${q.chapter}-${q.sub}` : `q${q.id}`;
     for (const phase of q.phases) {
       if (q.noBattle.includes(phase)) continue;

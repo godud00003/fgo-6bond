@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 // 인라인 워커: 파일을 직접 열어도(file://) 동작하도록 워커 코드를 번들 안에 넣는다
 import SearchWorker from './worker.ts?worker&inline';
+import UpdateWorker from './update.worker.ts?worker&inline';
+import { latestKr, loadCached, saveCached, type Dataset } from './update.ts';
 import { fetchQuest, namuQuery, resolveQuest, type Candidate } from './engine/quest.ts';
 import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './engine/search.ts';
 import type { BondCE, MysticCode, QuestData, Rel, Servant, War } from './engine/types.ts';
 
-interface Data { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel; mcs: MysticCode[] }
+type Data = Dataset;
 import { importLogin, type Roster, type RosterEntry, type Stock } from './engine/importLogin.ts';
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fAppend2: boolean; fAppend5: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; autoUpdate: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false, autoUpdate: true,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -38,6 +40,8 @@ function usePersist<T>(key: string, init: T): [T, (v: T | ((p: T) => T)) => void
 
 export default function App() {
   const [data, setData] = useState<Data | null>(null);
+  const [upd, setUpd] = useState('');
+  const updating = useRef(false);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<'party' | 'roster' | 'ce'>('party');
   const [roster, setRoster] = usePersist<Roster>('fgo-bond.roster', {});
@@ -47,15 +51,51 @@ export default function App() {
   useEffect(() => {
     // 단일 HTML 배포본에는 게임 데이터가 파일 안에 들어 있다
     const embedded = (window as unknown as { __FGO_DATA__?: Data }).__FGO_DATA__;
-    if (embedded) { setData(embedded); return; }
     const get = (f: string) => fetch(`${import.meta.env.BASE_URL}data/${f}`).then((r) => {
       if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
       return r.json();
     });
-    Promise.all(['servants.json', 'ces.json', 'wars.json', 'names.json', 'rel.json', 'mcs.json'].map(get))
-      .then(([servants, ces, wars, names, rel, mcs]) => setData({ servants, ces, wars, names, rel, mcs }))
-      .catch((e) => setError(String(e)));
+    const base: Promise<Data> = embedded ? Promise.resolve(embedded)
+      : Promise.all(['servants.json', 'ces.json', 'wars.json', 'names.json', 'rel.json', 'mcs.json', 'meta.json'].map(get))
+        .then(([servants, ces, wars, names, rel, mcs, meta]) => ({ servants, ces, wars, names, rel, mcs, meta }));
+    base.then(async (b) => {
+      if (!b.meta) b.meta = { kr: { hash: '', timestamp: 0 }, builtAt: 0 };
+      // 이전에 이 브라우저에서 받아 둔 더 새로운 데이터가 있으면 그것을 쓴다
+      const cached = await loadCached();
+      const cur = cached && cached.meta.kr.timestamp > b.meta.kr.timestamp ? cached : b;
+      setData(cur);
+      if (prefs.autoUpdate ?? true) void checkUpdate(cur, false);
+    }).catch((e) => setError(String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** 새 한국 서버 데이터가 있으면 받아서 바꾼다. manual: 사용자가 직접 누른 경우(결과를 항상 알려 준다) */
+  const checkUpdate = async (cur: Data, manual: boolean) => {
+    if (updating.current) return;
+    try {
+      if (manual) setUpd('새 데이터가 있는지 확인하는 중…');
+      const kr = await latestKr();
+      if (kr.timestamp <= cur.meta.kr.timestamp) { setUpd(manual ? '이미 최신 데이터입니다.' : ''); return; }
+    } catch {
+      setUpd(manual ? '확인하지 못했습니다. 인터넷 연결을 확인하세요.' : '');
+      return;
+    }
+    updating.current = true;
+    setUpd('새 게임 데이터를 받는 중…');
+    const w = new UpdateWorker();
+    w.onmessage = async (ev) => {
+      if (ev.data.type === 'progress') { setUpd(`새 게임 데이터로 업데이트하는 중 — ${ev.data.text}`); return; }
+      if (ev.data.type === 'done') {
+        const ds: Data = ev.data.dataset;
+        await saveCached(ds);
+        setData(ds);
+        setUpd(`새 게임 데이터로 업데이트했습니다 (서번트 ${ds.servants.length}기).`);
+      } else setUpd(`업데이트하지 못했습니다: ${ev.data.message}`);
+      updating.current = false;
+      w.terminate();
+    };
+    w.postMessage(0);
+  };
 
   /** 게임 로그인 데이터를 읽어 보유 서번트·인연 예장·코스트 상한을 한 번에 채운다(브라우저 안에서만 처리) */
   const onLogin = async (f: File): Promise<string> => {
@@ -76,6 +116,12 @@ export default function App() {
       <header>
         <h1>FGO 인연 파티 최적화</h1>
         <p className="muted">한국 서버 기준 · 인연 예장을 끼고도 클리어되는 파티 중 인연 포인트가 가장 많은 구성을 찾습니다.</p>
+        <p className="muted small dataline">
+          게임 데이터: {data.meta.kr.timestamp ? new Date(data.meta.kr.timestamp * 1000).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }) : '알 수 없음'} 기준
+          <button onClick={() => void checkUpdate(data, true)}>업데이트 확인</button>
+          <label className="check"><input type="checkbox" checked={prefs.autoUpdate ?? true} onChange={(e) => setPrefs((p) => ({ ...p, autoUpdate: e.target.checked }))} /> 열 때마다 자동 업데이트</label>
+          {upd && <b>{upd}</b>}
+        </p>
         <nav>
           <button className={tab === 'party' ? 'on' : ''} onClick={() => setTab('party')}>파티 추천</button>
           <button className={tab === 'roster' ? 'on' : ''} onClick={() => setTab('roster')}>내 서번트 ({owned})</button>

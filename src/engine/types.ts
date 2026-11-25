@@ -46,6 +46,8 @@ export interface BondCE {
 export interface QuestRef {
   id: number; type: 'main' | 'free'; name: string; spot: string; chapter: number; sub: number;
   subStr: string; phases: number[]; noBattle: number[]; ap: number; lv: string;
+  /** 기간 한정(요일·이벤트) 퀘스트가 열리는 기간 [시작, 종료] (초). 없으면 상시. */
+  open?: [number, number];
 }
 export interface War { id: number; name: string; longName: string; quests: QuestRef[] }
 export interface Rel {
