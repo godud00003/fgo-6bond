@@ -13,6 +13,8 @@ export interface CEStock { ce: BondCE; count: number; mlb: boolean; /** 보유�
 export interface Settings {
   maxTurns: number; costCap: number; roll: number; startNp: number;
   friendCe: { no: number; mlb: boolean } | null; topN: number;
+  /** 프렌드가 낀 인연 예장을 자동으로 고른다: 어떤 예장을 낀 프렌드를 빌리면 인연 합계가 가장 큰지 찾는다(최대해방 기준) */
+  friendCeAuto?: boolean;
   /** 프렌드 서번트의 어펜드: 시작 NP(어펜드 2)와 스킬 재장전 횟수(어펜드 5). 없으면 startNp·reload와 같게 본다. */
   friendAppendNp?: number; friendReload?: number;
   /** 프렌드가 인연 예장 대신 시작 NP 예장을 낀 경우의 추가 시작 NP (10000 = 100%). friendCe와 함께 쓸 수 없다. */
@@ -57,6 +59,8 @@ export interface SearchOutput {
   note?: string;
   /** 자동 선택 모드에서 고른 마술예장 이름(예장이 도움이 안 되면 null) */
   autoMc?: string | null;
+  /** 프렌드 예장 자동 선택에서 고른 예장 이름(도움이 되는 예장이 없으면 null) */
+  autoFriendCe?: string | null;
 }
 
 /** 주회 서포터로 쓰이는 서번트(도감 번호) */
@@ -312,19 +316,39 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     }
   }
 
-  // 예장 ATK가 필요한 편성은 그 예장을 반드시 포함하는 조건으로 인연을 따로 최적화한다
-  const all2 = [...optimizeBond(cores, pool, stock, quest, st, null), ...(atkStock ? optimizeBond(coresAtk, pool, stock, quest, st, atkStock) : [])];
-  // 인연이 같으면 턴이 적고, 조건(예장 ATK·마술예장·교체)이 덜 붙은 편성을 앞에 둔다
-  const burden = (r: PartyResult) => Number(!!r.atkCe) + Number(!!r.mc) + Number(r.back.some((m) => m.sub));
-  all2.sort((a, b) => b.total - a.total || a.turns - b.turns || burden(a) - burden(b) || a.cost - b.cost);
-  // 멤버 구성이 완전히 같은 결과는 하나만
-  const seen = new Set<string>();
-  const results = all2.filter((r) => {
-    const k = [...r.front, ...r.back].filter((m) => m.svt).map((m) => m.svt.no + (m.friend ? 'f' : '')).sort().join(',') + '|' + r.ces.map((c) => c.ce.no).sort().join(',');
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  }).slice(0, st.topN);
+  /** 클리어되는 편성들 위에서 인연을 최적화한다. 프렌드 예장은 전투에 영향이 없으므로 여기서만 바뀐다. */
+  const rank = (s2: Settings): PartyResult[] => {
+    // 예장 ATK가 필요한 편성은 그 예장을 반드시 포함하는 조건으로 인연을 따로 최적화한다
+    const all2 = [...optimizeBond(cores, pool, stock, quest, s2, null), ...(atkStock ? optimizeBond(coresAtk, pool, stock, quest, s2, atkStock) : [])];
+    // 인연이 같으면 턴이 적고, 조건(예장 ATK·마술예장·교체)이 덜 붙은 편성을 앞에 둔다
+    const burden = (r: PartyResult) => Number(!!r.atkCe) + Number(!!r.mc) + Number(r.back.some((m) => m.sub));
+    all2.sort((a, b) => b.total - a.total || a.turns - b.turns || burden(a) - burden(b) || a.cost - b.cost);
+    // 멤버 구성이 완전히 같은 결과는 하나만
+    const seen = new Set<string>();
+    return all2.filter((r) => {
+      const k = [...r.front, ...r.back].filter((m) => m.svt).map((m) => m.svt.no + (m.friend ? 'f' : '')).sort().join(',') + '|' + r.ces.map((c) => c.ce.no).sort().join(',');
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).slice(0, s2.topN);
+  };
+  let results = rank(st);
+  let autoFriendCe: string | null | undefined;
+  if (st.friendCeAuto && !st.friendStartNp && (cores.length || coresAtk.length)) {
+    // 후보: 조건마다 프렌드가 꼈을 때 수치가 가장 큰 예장 하나씩(조건 없는 % 중에서는 칼데아 티타임), 고정치 하나
+    const supVal = (c: BondCE) => (c.sup ?? c.val)[1];
+    const byCond = new Map<string, BondCE>();
+    for (const c of stock.map((s) => s.ce)) {
+      const key = c.kind === 'flat' ? 'flat' : JSON.stringify(c.cond);
+      const cur = byCond.get(key);
+      if (!cur || supVal(c) > supVal(cur)) byCond.set(key, c);
+    }
+    autoFriendCe = null;
+    for (const c of byCond.values()) {
+      const r = rank({ ...st, friendCe: { no: c.no, mlb: true } });
+      if (r[0] && (!results[0] || r[0].total > results[0].total)) { results = r; autoFriendCe = c.name; }
+    }
+  }
   const feasible = cores.length + coresAtk.length;
   let note: string | undefined;
   if (st.must?.length && feasible && !results.length) {
@@ -334,7 +358,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
       : '클리어되는 조합은 있지만, 필수 포함 서번트를 모두 넣으면 자리(내 서번트 5기)나 코스트가 모자랍니다.';
   }
   if (st.orderChange && !ocMc) note = [note, '오더 체인지를 켰지만 고른 마술예장에 오더 체인지가 없어 쓰지 않았습니다. 마술예장을 자동 선택으로 두거나 전투복·결전용 제복을 고르세요.'].filter(Boolean).join(' ');
-  return { results, simulated, feasible, bestFail: feasible ? null : bestFail, note, autoMc: st.mcAuto?.length ? (mcList.slice(1).map((m) => m!.name.replace(/^마술예장 /, '')).join(', ') || null) : undefined };
+  return { results, simulated, feasible, bestFail: feasible ? null : bestFail, note, autoFriendCe, autoMc: st.mcAuto?.length ? (mcList.slice(1).map((m) => m!.name.replace(/^마술예장 /, '')).join(', ') || null) : undefined };
 }
 
 // ---------------------------------------------------------------- 인연 포인트 최적화

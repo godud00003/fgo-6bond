@@ -168,7 +168,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0, reload: prefs.append5 ? 3 : 0,
       friendAppendNp: (prefs.fAppend2 ?? true) ? 2000 : 0, friendReload: (prefs.fAppend5 ?? true) ? 3 : 0,
       // 프렌드 예장 칸은 하나: 인연 예장이거나, 시작 NP 예장(np:수치)이거나
-      friendCe: fNo && fNo !== 'np' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
+      friendCe: fNo && fNo !== 'np' && fNo !== 'auto' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendCeAuto: fNo === 'auto', friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
       mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
     };
@@ -256,6 +256,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           <label>프렌드 서포트의 예장
             <select value={prefs.friendCe} onChange={(e) => set('friendCe', e.target.value)}>
               <option value="">인연 예장 없음</option>
+              <option value="auto">자동 선택 (가장 도움이 되는 인연 예장)</option>
               {data.ces.filter((c) => c.kind === 'pct').map((c) => (
                 <option key={c.no} value={`${c.no}:1`}>{c.name} (최대해방 {(c.sup ?? c.val)[1] / 10}%)</option>
               ))}
@@ -323,6 +324,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
         <section className="card">
           <h2>3. 추천 파티</h2>
           <p className="muted small">전투 조합 {output.simulated.toLocaleString()}개를 계산했고, 그중 {prefs.maxTurns}턴 안에 클리어되는 조합은 {output.feasible.toLocaleString()}개입니다.
+            {output.autoFriendCe !== undefined && (output.autoFriendCe ? ` 프렌드 예장 자동 선택: "${output.autoFriendCe}"(최대해방)을 낀 프렌드를 빌릴 때 인연이 가장 큽니다.` : ' 프렌드 예장 자동 선택: 도움이 되는 인연 예장이 없었습니다.')}
             {output.autoMc !== undefined && (output.autoMc ? ` 마술예장 자동 선택: 예장 없이 안 되는 편성에는 "${output.autoMc}"을(를) 썼습니다.` : ' 마술예장 자동 선택: 도움이 되는 예장이 없었습니다.')}</p>
           {output.note && <div className="warn"><p>{output.note}</p></div>}
           {!output.results.length && !output.note && (
