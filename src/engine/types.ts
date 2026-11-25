@@ -46,10 +46,14 @@ export interface MysticCode { id: number; name: string; skills: Skill[] }
 
 export interface EnemyDef {
   name: string; cls: string; attr: string; traits: number[]; bars: number[]; tdRate: number; deckId: number;
+  /** 이 적이 살아 있는 동안 빈자리에 불러내는 증원(순서대로, 반복 소환) */
+  call?: EnemyDef[];
 }
 export interface QuestData {
   id: number; phase: number; name: string; bond: number; ap: number;
   fieldTraits: number[]; waves: EnemyDef[][]; warnings: string[];
+  /** 웨이브별 증원 목록: 특정 적이 아니라 필드에 적이 하나라도 남아 있으면 빈자리에 소환된다 */
+  waveCalls?: EnemyDef[][];
 }
 
 export interface TurnLog {

@@ -11,7 +11,7 @@ const NP_CARD_TRAIT = 4007;
 
 interface Buff { t: string; val: number; turn: number; count: number; d: BuffDef }
 interface Actor { cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[]; fired: boolean }
-interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean }
+interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean; summoned?: boolean }
 interface State {
   actors: Actor[]; field: Enemy[]; reserve: Enemy[]; wave: number; quest: QuestData;
   rel: Rel; roll: number; killed: number;
@@ -36,7 +36,7 @@ function cloneState(s: State): State {
     ...s,
     actors: s.actors.map((a) => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), fired: a.fired, buffs: a.buffs.map((b) => ({ ...b })) })),
     master: s.master && { ...s.master, cd: s.master.cd.slice(), buffs: [] },
-    field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: e.buffs.map((b) => ({ ...b })) })),
+    field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, summoned: e.summoned, buffs: e.buffs.map((b) => ({ ...b })) })),
     reserve: s.reserve.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: [] })),
   };
 }
@@ -46,6 +46,19 @@ function loadWave(s: State) {
   const all = defs.map((def) => ({ def, bars: def.bars.slice(), buffs: [], dead: false }));
   s.field = all.slice(0, 3);
   s.reserve = all.slice(3);
+  summon(s, false); // 웨이브 시작 시 소환(자기 증원 목록을 가진 적만)
+}
+
+/**
+ * 증원 소환. 적 AI는 필드에 빈자리가 있으면 소환 스킬을 쓰며, 같은 증원을 몇 번이고 다시 부른다.
+ * 자기 목록(def.call)을 가진 적은 그 적이 살아 있을 때, 웨이브 공통 목록은 적이 하나라도 남아 있을 때 소환된다.
+ */
+function summon(s: State, withStage: boolean) {
+  const add = (def: EnemyDef) => { if (s.field.length < 3) s.field.push({ def, bars: def.bars.slice(), buffs: [], dead: false, summoned: true }); };
+  const callers = s.field.filter((e) => !e.dead);
+  if (!callers.length) return;
+  for (const c of callers) for (const d of c.def.call ?? []) add(d);
+  if (withStage) for (const d of s.quest.waveCalls?.[s.wave] ?? []) add(d);
 }
 
 const alive = (s: State) => s.field.filter((e) => !e.dead);
@@ -189,7 +202,7 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
         let kill = false;
         if (dmg >= before) {
           e.bars.shift();
-          if (!e.bars.length) { e.dead = true; kill = true; s.killed++; }
+          if (!e.bars.length) { e.dead = true; kill = true; if (!e.summoned) s.killed++; }
         } else e.bars[0] -= dmg;
         entry.hits.push({ enemy: e.def.name, dmg, hp: before, kill });
       }
@@ -309,6 +322,7 @@ function endTurn(s: State): boolean {
     e.buffs = e.buffs.filter((b) => b.turn !== 0);
   }
   while (s.field.length < 3 && s.reserve.length) s.field.push(s.reserve.shift()!);
+  summon(s, true); // 플레이어 행동이 끝난 뒤 남은 적이 빈자리에 증원을 부른다
   if (!s.field.length) {
     s.wave++;
     if (s.wave >= s.quest.waves.length) return true;

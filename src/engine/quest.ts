@@ -111,27 +111,41 @@ const API = 'https://api.atlasacademy.io';
 export function toQuestData(raw: any, names: Record<string, string>, title?: string): QuestData {
   const warnings: string[] = [];
   const waves: EnemyDef[][] = [];
+  const waveCalls: EnemyDef[][] = [];
   for (const st of raw.stages || []) {
     const byNpc = new Map<number, any>();
     for (const e of st.enemies) byNpc.set(e.npcId, e);
+    const toDef = (e: any): EnemyDef => {
+      const bars = [e.hp];
+      for (const id of e.enemyScript?.shift || []) { const n = byNpc.get(id); if (n) bars.push(n.hp); }
+      return {
+        name: names[e.svt.id] || e.name, cls: e.svt.className, attr: e.svt.attribute,
+        traits: (e.traits || []).map((t: any) => t.id), bars, tdRate: e.serverMod?.tdRate ?? 1000, deckId: e.deckId,
+      };
+    };
+    // 증원(call 덱): 적 AI가 필드에 빈자리가 있을 때 불러낸다. 소환 목록은 적 개별(enemyScript.call) 또는 웨이브 공통(stage.call).
+    const callDefs = (ids: number[] | undefined): EnemyDef[] =>
+      (ids || []).map((id) => byNpc.get(id)).filter((e: any) => e && e.deck === 'call').map(toDef);
     const wave: EnemyDef[] = [];
     for (const e of st.enemies) {
       if (e.deck !== 'enemy') continue;
-      const bars = [e.hp];
-      for (const id of e.enemyScript?.shift || []) { const n = byNpc.get(id); if (n) bars.push(n.hp); }
-      wave.push({
-        name: names[e.svt.id] || e.name, cls: e.svt.className, attr: e.svt.attribute,
-        traits: (e.traits || []).map((t: any) => t.id), bars, tdRate: e.serverMod?.tdRate ?? 1000, deckId: e.deckId,
-      });
+      const def = toDef(e);
+      const call = callDefs(e.enemyScript?.call);
+      if (call.length) def.call = call;
+      wave.push(def);
     }
-    if (st.enemies.some((e: any) => e.deck === 'call')) warnings.push(`${st.wave}웨이브에 전투 중 소환되는 적이 있어 계산에서 빠졌습니다.`);
+    const stageCall = callDefs(st.call);
+    if (stageCall.length || wave.some((e) => e.call)) {
+      warnings.push(`${st.wave}웨이브의 적은 빈자리가 생기면 증원을 계속 소환합니다. 소환하는 적까지 같은 턴에 쓰러뜨려야 웨이브가 끝납니다.`);
+    }
     if (wave.some((e) => e.bars.length > 1)) warnings.push(`${st.wave}웨이브에 브레이크 게이지를 가진 적이 있습니다.`);
-    if (wave.length) waves.push(wave);
+    if (wave.length) { waves.push(wave); waveCalls.push(stageCall); }
   }
   if (!waves.length) warnings.push('이 전투는 Atlas Academy에 적 데이터가 없습니다.');
   return {
     id: raw.id, phase: raw.phase, name: title || raw.name, bond: raw.bond ?? 0, ap: raw.consume ?? 0,
     fieldTraits: (raw.individuality || []).map((t: any) => t.id), waves, warnings,
+    waveCalls: waveCalls.some((c) => c.length) ? waveCalls : undefined,
   };
 }
 

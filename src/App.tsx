@@ -208,6 +208,14 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
                     <span className="hp">{e.bars.map((h) => h.toLocaleString()).join(' / ')}</span>
                   </span>
                 ))}
+                {[...wave.flatMap((e) => e.call ?? []), ...(quest.waveCalls?.[i] ?? [])]
+                  .filter((e, k, all) => all.findIndex((x) => x.name === e.name && x.cls === e.cls && x.bars[0] === e.bars[0]) === k)
+                  .map((e, k) => (
+                    <span key={`c${k}`} className={`enemy call cls-${e.cls}`} title="빈자리가 생기면 반복 소환되는 증원">
+                      <b>증원: {e.name}</b> {CLASS_KO[e.cls] ?? e.cls}·{ATTR_KO[e.attr] ?? e.attr}
+                      <span className="hp">{e.bars.map((h) => h.toLocaleString()).join(' / ')}</span>
+                    </span>
+                  ))}
               </div>
             ))}
           </div>
