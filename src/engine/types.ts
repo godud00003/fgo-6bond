@@ -11,6 +11,10 @@ export interface Servant {
   id: number; no: number; name: string; cls: string; rarity: number; cost: number; attr: string;
   traits: number[]; atk: { 1: number; max: number; 100: number; 120: number };
   skills: Skill[]; np: NP | null; passive: Fn[]; face: string;
+  /** 커맨드 카드 덱(a/b/q 5장), 카드별 히트 수, 카드별 히트당 NP 획득률(×100) */
+  deck: string;
+  hits: Record<'a' | 'b' | 'q', number>;
+  cgain: Record<'a' | 'b' | 'q', number>;
   /** 영기재림 단계(0~4)별 특성. 단계에 따라 특성이 달라지는 서번트에만 있다. traits는 4단계 기준. */
   asc?: number[][];
 }
@@ -62,6 +66,8 @@ export interface TurnLog {
   turn: number; wave: number;
   skills: { who: string; skill: string; target?: string }[];
   nps: { who: string; np: string; hits: { enemy: string; dmg: number; hp: number; kill: boolean }[]; refund: number }[];
+  /** 보구를 쓰고 남은 카드 칸에 낸 평타(평균 기대치) */
+  face?: { cards: number; hits: { enemy: string; dmg: number; hp: number; kill: boolean }[]; np: number };
 }
 export interface SimResult {
   cleared: boolean; turns: number; killed: number; total: number; log: TurnLog[];

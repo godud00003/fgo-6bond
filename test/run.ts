@@ -31,7 +31,8 @@ const pool: PoolEntry[] = servants.map((s) => ({ svt: s, npLv: npDefault(s), ski
 const stock: CEStock[] = ces.map((ce) => ({ ce, count: 1, mlb: true }));
 const mcs: MysticCode[] = j('mcs.json');
 // 환경 변수: MC=마술예장 id, CARDNP=평타 NP 가정(100 = 1%)
-const st = { lv1, mc: mcs.find((m) => m.id === Number(process.env.MC))?.skills ?? null, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
+// FACE=1 평타 계산, NODUP=1 동일 서번트 편성 제외
+const st = { face: !!process.env.FACE, allowDup: !process.env.NODUP, lv1, mc: mcs.find((m) => m.id === Number(process.env.MC))?.skills ?? null, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
 const t0 = Date.now();
 const out = search(pool, servants, stock, quest, rel, st);
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0);

@@ -10,10 +10,10 @@ import { importLogin, type Roster, type RosterEntry, type Stock } from './engine
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; face: boolean; allowDup: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0, lv1: false,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0, lv1: false, face: true, allowDup: true,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -167,7 +167,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
       friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
-      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: prefs.cardNp, lv1: prefs.lv1,
+      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: 0, lv1: prefs.lv1, face: prefs.face, allowDup: prefs.allowDup,
     };
     w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
   };
@@ -270,9 +270,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               {data.mcs.map((m) => <option key={m.id} value={m.id}>{m.name.replace(/^마술예장 /, '')}</option>)}
             </select>
           </label>
-          <label>평타로 얻는 NP 가정 (보구를 안 쓴 턴마다)
-            <select value={prefs.cardNp} onChange={(e) => set('cardNp', Number(e.target.value))}>
-              <option value={0}>없음 — 확정 클리어</option><option value={500}>5%</option><option value={1000}>10%</option>
+          <label title="보구를 내고 남은 카드 칸의 평타를 계산합니다. 어떤 카드가 나올지는 운이라서, 덱 15장의 평균 대미지와 평균 NP 획득량을 씁니다. 크리티컬과 엑스트라 어택은 넣지 않습니다.">평타 (대미지·NP)
+            <select value={prefs.face ? 1 : 0} onChange={(e) => set('face', e.target.value === '1')}>
+              <option value={1}>평균 기대치로 계산</option><option value={0}>계산 안 함 — 보구만</option>
             </select>
           </label>
           <label>찻주전자
@@ -282,6 +282,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           </label>
           <label className="check" title="2부 6장의 일부 전투처럼 출전 서번트 전원(프렌드 포함)의 레벨이 1이 되는 기믹. 스킬·보구 레벨은 그대로이고 ATK만 레벨 1 수치로 계산합니다.">
             <input type="checkbox" checked={prefs.lv1} onChange={(e) => set('lv1', e.target.checked)} /> 전원 레벨 1 고정 (2부 6장 기믹)
+          </label>
+          <label className="check" title="프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성(예: 같은 딜러 2기, 같은 서포터 2기)을 후보에 넣습니다.">
+            <input type="checkbox" checked={prefs.allowDup} onChange={(e) => set('allowDup', e.target.checked)} /> 동일 서번트 편성 허용 (프렌드로 같은 서번트 빌리기)
           </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 스킬 2 (시작 NP 20%) 적용</label>
         </div>
@@ -372,7 +375,13 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
                   <span className="small muted"> {n.hits.map((h) => `${h.enemy} ${h.dmg.toLocaleString()}/${h.hp.toLocaleString()}${h.kill ? ' 처치' : ''}`).join(' · ')} · NP 회수 {(n.refund / 100).toFixed(0)}%</span>
                 </div>
               ))}
-              {!t.nps.length && <div className="small muted">보구 없음</div>}
+              {t.face && (
+                <div className="np">
+                  평타 {t.face.cards}장 (평균 기대치)
+                  <span className="small muted"> {t.face.hits.map((h) => `${h.enemy} ${h.dmg.toLocaleString()}/${h.hp.toLocaleString()}${h.kill ? ' 처치' : ''}`).join(' · ')} · NP +{(t.face.np / 100).toFixed(0)}% (전원 합계)</span>
+                </div>
+              )}
+              {!t.nps.length && !t.face && <div className="small muted">보구 없음</div>}
             </div>
           ))}
         </div>

@@ -19,6 +19,10 @@ export interface Settings {
   mc?: Skill[] | null;
   /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
   cardNp?: number;
+  /** 보구를 쓰고 남은 카드 칸의 평타를 평균 기대치로 계산한다 */
+  face?: boolean;
+  /** 프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성을 허용한다(기본 허용) */
+  allowDup?: boolean;
 }
 export interface Member { svt: Servant; friend: boolean; role: 'dealer' | 'support' | 'filler'; bond: number; counted: boolean }
 export interface PartyResult {
@@ -53,7 +57,8 @@ export function search(
   const coresAtk: Core[] = [];
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
     ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp, role, friend: true });
-  const extra = { mc: st.mc, cardNp: st.cardNp };
+  const extra = { mc: st.mc, cardNp: st.cardNp, face: st.face };
+  const allowDup = st.allowDup !== false;
   const sim1 = (front: ActorCfg[]) => simulateBest(front, quest, rel, st.maxTurns, st.roll, extra);
 
   const dealers = pool.filter((p) => p.svt.np?.dmg);
@@ -81,7 +86,7 @@ export function search(
       return out;
     }
     const [a, b] = combo;
-    if (a === b) { if (ownOk(a)) out.push({ own: [byNo.get(a)!], friend: allByNo.get(a)! }); return out; }
+    if (a === b) { if (allowDup && ownOk(a)) out.push({ own: [byNo.get(a)!], friend: allByNo.get(a)! }); return out; }
     if (ownOk(a)) out.push({ own: [byNo.get(a)!], friend: allByNo.get(b)! });
     if (ownOk(b)) out.push({ own: [byNo.get(b)!], friend: allByNo.get(a)! });
     if (ownOk(a) && ownOk(b)) out.push({ own: [byNo.get(a)!, byNo.get(b)!], friend: null });
@@ -112,6 +117,7 @@ export function search(
 
   /** 프렌드로 같은 딜러를 빌려 보구를 번갈아 쓰는 편성(프렌드 보구 레벨은 1로 가정) */
   const tryFriendDealer = (d: PoolEntry, sup: PoolEntry | null): boolean => {
+    if (!allowDup) return false;
     const mkFront = (plus: number) => [cfg(d, 'dealer', plus), friendCfg(d.svt, 'dealer'), ...(sup ? [cfg(sup, 'support')] : [])];
     let sim = sim1(mkFront(0));
     simulated++;
