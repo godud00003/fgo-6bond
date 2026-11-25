@@ -34,9 +34,12 @@ export interface ActorCfg {
   skillLv: number;    // 1~10
   atk: number;        // 성배·포우 포함 최종 ATK
   startNp: number;    // 시작 NP (10000 = 100%)
-  role: 'dealer' | 'support' | 'filler';
+  role: 'dealer' | 'support' | 'filler' | 'master';
   friend?: boolean;
 }
+
+/** 마술예장. 스킬은 서번트 스킬과 같은 형식이며 레벨 10 기준으로 쓴다. */
+export interface MysticCode { id: number; name: string; skills: Skill[] }
 
 export interface EnemyDef {
   name: string; cls: string; attr: string; traits: number[]; bars: number[]; tdRate: number; deckId: number;

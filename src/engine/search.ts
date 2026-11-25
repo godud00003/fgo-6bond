@@ -1,6 +1,6 @@
 // 클리어 가능한 전열 조합을 찾고, 그 위에서 인연 포인트 총합이 최대가 되는 파티·예장을 고른다.
 import { simulateBest } from './sim.ts';
-import type { ActorCfg, BondCE, QuestData, Rel, Servant, SimResult } from './types.ts';
+import type { ActorCfg, BondCE, QuestData, Rel, Servant, SimResult, Skill } from './types.ts';
 
 export interface PoolEntry { svt: Servant; npLv: number; skillLv: number; atk: number; weight: number; bond15?: boolean }
 export interface CEStock { ce: BondCE; count: number; mlb: boolean }
@@ -9,6 +9,10 @@ export interface Settings {
   friendCe: { no: number; mlb: boolean } | null; topN: number;
   /** 찻주전자 배수(1 = 미사용). 최종 인연 포인트에 곱해진다. */
   teapot: number;
+  /** 마술예장 스킬(없으면 미사용) */
+  mc?: Skill[] | null;
+  /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
+  cardNp?: number;
 }
 export interface Member { svt: Servant; friend: boolean; role: 'dealer' | 'support' | 'filler'; bond: number; counted: boolean }
 export interface PartyResult {
@@ -20,7 +24,7 @@ export interface SearchOutput { results: PartyResult[]; simulated: number; feasi
 /** 주회 서포터로 쓰이는 서번트(도감 번호) */
 export const SUPPORT_NOS = [284, 314, 316, 215, 357, 37, 150, 353, 62, 241, 307, 90, 34, 79, 249];
 
-interface Core { own: PoolEntry[]; friend: Servant | null; roles: Map<number, 'dealer' | 'support'>; sim: SimResult }
+interface Core { own: PoolEntry[]; friend: Servant | null; friendRole?: 'dealer' | 'support'; roles: Map<number, 'dealer' | 'support'>; sim: SimResult }
 
 const condMatch = (cond: number[][], traits: number[]) => !cond.length || cond.some((g) => g.every((t) => traits.includes(t)));
 
@@ -32,8 +36,10 @@ export function search(
   const allByNo = new Map(all.map((s) => [s.no, s]));
   const cfg = (p: PoolEntry, role: 'dealer' | 'support'): ActorCfg =>
     ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, atk: p.atk, startNp: st.startNp, role });
-  const friendCfg = (s: Servant): ActorCfg =>
-    ({ svt: s, npLv: 1, skillLv: 10, atk: s.atk.max + 1000, startNp: st.startNp, role: 'support', friend: true });
+  const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
+    ({ svt: s, npLv: 1, skillLv: 10, atk: s.atk.max + 1000, startNp: st.startNp, role, friend: true });
+  const extra = { mc: st.mc, cardNp: st.cardNp };
+  const sim1 = (front: ActorCfg[]) => simulateBest(front, quest, rel, st.maxTurns, st.roll, extra);
 
   const dealers = pool.filter((p) => p.svt.np?.dmg);
   const supports = SUPPORT_NOS.filter((n) => allByNo.has(n));
@@ -74,7 +80,7 @@ export function search(
     // 전투 결과는 누가 프렌드든 같다고 보고(프렌드는 풀스펙 가정) 한 번만 시뮬레이션
     const v0 = vs[vs.length - 1];
     const front = [...ds.map((d) => cfg(d, 'dealer')), ...v0.own.map((p) => cfg(p, 'support')), ...(v0.friend ? [friendCfg(v0.friend)] : [])];
-    const sim = simulateBest(front, quest, rel, st.maxTurns, st.roll);
+    const sim = sim1(front);
     simulated++;
     if (!sim.cleared) { noteFail(front.map((f) => f.svt.name), sim); return false; }
     for (const v of vs) {
@@ -86,6 +92,19 @@ export function search(
     return true;
   };
 
+  /** 프렌드로 같은 딜러를 빌려 보구를 번갈아 쓰는 편성(프렌드 보구 레벨은 1로 가정) */
+  const tryFriendDealer = (d: PoolEntry, sup: PoolEntry | null): boolean => {
+    const front = [cfg(d, 'dealer'), friendCfg(d.svt, 'dealer'), ...(sup ? [cfg(sup, 'support')] : [])];
+    const sim = sim1(front);
+    simulated++;
+    if (!sim.cleared) { noteFail(front.map((f) => f.svt.name), sim); return false; }
+    const roles = new Map<number, 'dealer' | 'support'>([[d.svt.no, 'dealer']]);
+    if (sup) roles.set(sup.svt.no, 'support');
+    cores.push({ own: sup ? [d, sup] : [d], friend: d.svt, friendRole: 'dealer', roles, sim });
+    return true;
+  };
+
+  let plain = 0; // 딜러 1기 + 서포터 편성으로 클리어된 수
   for (const d of dealers) {
     const okSingles = new Set<number>();
     let solo = false;
@@ -94,23 +113,27 @@ export function search(
       if (solo || combo.includes(d.svt.no)) continue;
       if (combo.some((n) => okSingles.has(n))) continue; // 더 작은 조합으로 이미 클리어 가능
       if (tryCores([d], combo)) {
+        plain++;
         if (combo.length === 0) solo = true;
         else if (combo.length === 1) okSingles.add(combo[0]);
       }
+    }
+    if (!solo && !tryFriendDealer(d, null)) {
+      for (const n of supports) if (n !== d.svt.no && byNo.has(n)) tryFriendDealer(d, byNo.get(n)!);
     }
     onProgress?.(done, total);
   }
 
   // 딜러 1명으로 안 되면 딜러 2~3명 조합을 시도
-  if (!cores.length && dealers.length > 1) {
-    const solo = dealers.map((d) => ({ d, sim: simulateBest([cfg(d, 'dealer')], quest, rel, st.maxTurns, st.roll) }));
+  if (!plain && dealers.length > 1) {
+    const solo = dealers.map((d) => ({ d, sim: sim1([cfg(d, 'dealer')]) }));
     const dmg = (s: SimResult) => s.log.reduce((n, t) => n + t.nps.reduce((m, x) => m + x.hits.reduce((k, h) => k + Math.min(h.dmg, h.hp), 0), 0), 0);
     const top = solo.map((x) => ({ d: x.d, score: dmg(x.sim) })).sort((a, b) => b.score - a.score).slice(0, 14).map((x) => x.d);
     const single = combos.filter((c) => c.length <= 1);
     for (let i = 0; i < top.length; i++) for (let j = i + 1; j < top.length; j++) {
       for (const c of single) if (tryCores([top[i], top[j]], c) && c.length === 0) break;
     }
-    if (!cores.length) {
+    if (!plain && cores.every((c) => c.friendRole === 'dealer')) {
       const t3 = top.slice(0, 9);
       for (let i = 0; i < t3.length; i++) for (let j = i + 1; j < t3.length; j++) for (let k = j + 1; k < t3.length; k++) tryCores([t3[i], t3[j], t3[k]], []);
     }
@@ -319,7 +342,7 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
       bond: bondFor(base, allFront + (inFront ? FRONT_OWN : 0), pctFor(p.svt.traits), flat) * st.teapot,
     });
     const coreMembers = b.core.own.map((p) => mk(p, b.core.roles.get(p.svt.no) ?? 'filler', true));
-    const friend: Member | null = b.core.friend ? { svt: b.core.friend, friend: true, role: 'support', bond: 0, counted: false } : null;
+    const friend: Member | null = b.core.friend ? { svt: b.core.friend, friend: true, role: b.core.friendRole ?? 'support', bond: 0, counted: false } : null;
     const front: Member[] = [...coreMembers, ...(friend ? [friend] : [])];
     const back: Member[] = [];
     const frontFree = Math.max(0, 3 - front.length);

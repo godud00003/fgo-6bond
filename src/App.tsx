@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchQuest, namuQuery, resolveQuest, type Candidate } from './engine/quest.ts';
 import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './engine/search.ts';
-import type { BondCE, QuestData, Rel, Servant, War } from './engine/types.ts';
+import type { BondCE, MysticCode, QuestData, Rel, Servant, War } from './engine/types.ts';
 
-interface Data { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel }
+interface Data { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel; mcs: MysticCode[] }
 interface RosterEntry { owned: boolean; npLv: number; lv: 'max' | '100' | '120'; skillLv: number; bondMax: boolean; bond15?: boolean }
 type Roster = Record<number, RosterEntry>;
 type Stock = Record<number, { count: number; mlb: boolean }>;
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: 0, cardNp: 0,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -48,8 +48,8 @@ export default function App() {
       if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
       return r.json();
     });
-    Promise.all(['servants.json', 'ces.json', 'wars.json', 'names.json', 'rel.json'].map(get))
-      .then(([servants, ces, wars, names, rel]) => setData({ servants, ces, wars, names, rel }))
+    Promise.all(['servants.json', 'ces.json', 'wars.json', 'names.json', 'rel.json', 'mcs.json'].map(get))
+      .then(([servants, ces, wars, names, rel, mcs]) => setData({ servants, ces, wars, names, rel, mcs }))
       .catch((e) => setError(String(e)));
   }, []);
 
@@ -143,6 +143,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
       friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
+      mc: data.mcs.find((m) => m.id === prefs.mc)?.skills ?? null, cardNp: prefs.cardNp,
     };
     w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
   };
@@ -231,6 +232,17 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               <option value={0}>없음</option><option value={1000}>+1000</option><option value={2000}>+2000</option>
             </select>
           </label>
+          <label>마술예장 (레벨 10 기준)
+            <select value={prefs.mc} onChange={(e) => set('mc', Number(e.target.value))}>
+              <option value={0}>사용 안 함</option>
+              {data.mcs.map((m) => <option key={m.id} value={m.id}>{m.name.replace(/^마술예장 /, '')}</option>)}
+            </select>
+          </label>
+          <label>평타로 얻는 NP 가정 (보구를 안 쓴 턴마다)
+            <select value={prefs.cardNp} onChange={(e) => set('cardNp', Number(e.target.value))}>
+              <option value={0}>없음 — 확정 클리어</option><option value={500}>5%</option><option value={1000}>10%</option>
+            </select>
+          </label>
           <label>찻주전자
             <select value={prefs.teapot} onChange={(e) => set('teapot', Number(e.target.value))}>
               <option value={1}>사용 안 함</option><option value={2}>인연 2배</option><option value={3}>인연 3배</option>
@@ -285,7 +297,7 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
       <div>
         <div className="mname">{m.svt ? m.svt.name : '프렌드 (자유)'}</div>
         <div className="small muted">
-          {m.friend ? '프렌드 서포트' : ROLE_KO[m.role]}
+          {m.friend ? `프렌드 ${m.role === 'dealer' ? '(딜러)' : '서포트'}` : ROLE_KO[m.role]}
           {m.svt && !m.friend && <> · <b className={m.counted ? 'bond' : ''}>{m.counted ? `+${m.bond.toLocaleString()}` : '인연 MAX'}</b></>}
         </div>
       </div>

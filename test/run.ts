@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveQuest, toQuestData } from '../src/engine/quest.ts';
 import { search, type PoolEntry, type CEStock } from '../src/engine/search.ts';
 import { simulate } from '../src/engine/sim.ts';
-import type { ActorCfg, BondCE, Rel, Servant, War } from '../src/engine/types.ts';
+import type { ActorCfg, BondCE, MysticCode, Rel, Servant, War } from '../src/engine/types.ts';
 
 const j = (f: string) => JSON.parse(fs.readFileSync(new URL('../public/data/' + f, import.meta.url), 'utf8'));
 const servants: Servant[] = j('servants.json'); const ces: BondCE[] = j('ces.json'); const wars: War[] = j('wars.json');
@@ -28,7 +28,9 @@ quest.waves.forEach((w, i) => console.log(' wave', i + 1, w.map((e) => `${e.name
 const npDefault = (s: Servant) => (s.rarity >= 5 ? 1 : s.rarity === 4 ? 2 : 5);
 const pool: PoolEntry[] = servants.map((s) => ({ svt: s, npLv: npDefault(s), skillLv: 10, atk: s.atk.max + 1000, weight: 1 }));
 const stock: CEStock[] = ces.map((ce) => ({ ce, count: 1, mlb: true }));
-const st = { maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
+const mcs: MysticCode[] = j('mcs.json');
+// 환경 변수: MC=마술예장 id, CARDNP=평타 NP 가정(100 = 1%)
+const st = { mc: mcs.find((m) => m.id === Number(process.env.MC))?.skills ?? null, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
 const t0 = Date.now();
 const out = search(pool, servants, stock, quest, rel, st);
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0);

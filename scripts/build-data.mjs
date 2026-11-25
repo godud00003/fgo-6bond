@@ -15,6 +15,7 @@ const SOURCES = {
   'KR_nice_war.json': 'export/KR/nice_war.json',
   'KR_basic_svt.json': 'export/KR/basic_svt.json',
   'ce.json': 'export/KR/nice_equip.json',
+  'KR_nice_mystic_code.json': 'export/KR/nice_mystic_code.json',
   'JP_NiceClassRelation.json': 'export/JP/NiceClassRelation.json',
   'JP_NiceClassAttackRate.json': 'export/JP/NiceClassAttackRate.json',
   'JP_NiceAttributeRelation.json': 'export/JP/NiceAttributeRelation.json',
@@ -172,6 +173,14 @@ for (const w of load('KR_nice_war.json')) {
   wars.push({ id: w.id, name: w.name, longName, quests });
 }
 
+// ---------- 마술예장 ----------
+// 보구 대미지나 NP에 영향을 주는 스킬이 하나라도 있는 예장만 남긴다
+const mcs = [];
+for (const m of load('KR_nice_mystic_code.json')) {
+  const skills = m.skills.map((k) => ({ name: k.name, cd: k.coolDown, fn: k.functions.map((f) => compactFn(f, 10)).filter(Boolean) }));
+  if (skills.some((k) => k.fn.length)) mcs.push({ id: m.id, name: m.name, skills });
+}
+
 // ---------- 이름, 상성 ----------
 const names = {};
 for (const s of load('KR_basic_svt.json')) names[s.id] = s.name;
@@ -190,6 +199,7 @@ const write = (f, v) => {
 write('servants.json', servants);
 write('ces.json', ces);
 write('wars.json', wars);
+write('mcs.json', mcs);
 write('names.json', names);
 write('rel.json', rel);
 console.log('servants', servants.length, 'bond CEs', ces.length, 'wars', wars.length);

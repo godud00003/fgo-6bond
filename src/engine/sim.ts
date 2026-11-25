@@ -1,6 +1,7 @@
 // 보구만으로 적을 정리할 수 있는지 판정하는 간이 전투 시뮬레이터.
-// 평타, 적의 행동(피격 NP, 디버프, 사망), 적 패시브·내성, 오버차지는 다루지 않는다.
-import type { ActorCfg, BuffDef, EnemyDef, Fn, QuestData, Rel, SimResult, Sv, TurnLog } from './types.ts';
+// 평타 대미지, 적의 행동(피격 NP, 디버프, 사망), 적 패시브·내성, 오버차지는 다루지 않는다.
+// 평타로 얻는 NP는 계산하지 않고, 옵션(cardNp)으로 준 가정치만 더한다.
+import type { ActorCfg, BuffDef, EnemyDef, Fn, QuestData, Rel, Servant, SimResult, Skill, Sv, TurnLog } from './types.ts';
 
 const CARD_TRAIT: Record<string, number> = { arts: 4001, buster: 4002, quick: 4003 };
 const CARD_DMG: Record<string, number> = { arts: 1, buster: 1.5, quick: 0.8 };
@@ -9,14 +10,23 @@ const isCardTrait = (id: number) => id >= 4001 && id <= 4008;
 const NP_CARD_TRAIT = 4007;
 
 interface Buff { t: string; val: number; turn: number; count: number; d: BuffDef }
-interface Actor { cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[] }
+interface Actor { cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[]; fired: boolean }
 interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean }
 interface State {
   actors: Actor[]; field: Enemy[]; reserve: Enemy[]; wave: number; quest: QuestData;
   rel: Rel; roll: number; killed: number;
+  /** 마술예장 스킬을 쓰는 가상의 행동 주체(전투에는 참가하지 않는다) */
+  master: Actor | null;
+  cardNp: number;
 }
 
-export interface SimOptions { maxTurns: number; roll: number; mode: 'lazy' | 'eager' }
+export interface SimExtra {
+  /** 마술예장 스킬(없으면 미사용) */
+  mc?: Skill[] | null;
+  /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
+  cardNp?: number;
+}
+export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: 'lazy' | 'eager' }
 
 const svAt = (fn: Fn, idx: number): Sv => (Array.isArray(fn.sv) ? fn.sv[Math.min(idx, fn.sv.length - 1)] : fn.sv);
 const hasAny = (list: number[] | undefined, set: number[]) => !list || !list.length || list.some((x) => set.includes(x));
@@ -24,7 +34,8 @@ const hasAny = (list: number[] | undefined, set: number[]) => !list || !list.len
 function cloneState(s: State): State {
   return {
     ...s,
-    actors: s.actors.map((a) => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), buffs: a.buffs.map((b) => ({ ...b })) })),
+    actors: s.actors.map((a) => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), fired: a.fired, buffs: a.buffs.map((b) => ({ ...b })) })),
+    master: s.master && { ...s.master, cd: s.master.cd.slice(), buffs: [] },
     field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: e.buffs.map((b) => ({ ...b })) })),
     reserve: s.reserve.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: [] })),
   };
@@ -148,6 +159,7 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
   const entry = { who: a.cfg.svt.name, np: np.name, hits: [] as TurnLog['nps'][0]['hits'], refund: 0 };
   let refund = 0;
   a.gauge = 0;
+  a.fired = true;
   for (const fn of np.fn) {
     if (!fn.t.startsWith('damageNp')) { applyFn(s, a, fn, a.cfg.npLv - 1, a); continue; }
     const sv = svAt(fn, a.cfg.npLv - 1);
@@ -223,7 +235,7 @@ const hasCharge = (r: SkillRef) => skillFns(r).some((f) => f.t === 'gainNp');
 
 function available(s: State): SkillRef[] {
   const out: SkillRef[] = [];
-  for (const a of s.actors) a.cfg.svt.skills.forEach((_, i) => { if (a.cd[i] === 0) out.push({ a, i }); });
+  for (const a of s.master ? [...s.actors, s.master] : s.actors) a.cfg.svt.skills.forEach((_, i) => { if (a.cd[i] === 0) out.push({ a, i }); });
   return out;
 }
 function useSkill(s: State, r: SkillRef, target: Actor, log?: TurnLog) {
@@ -280,7 +292,10 @@ function playTurn(s: State, mode: 'lazy' | 'eager', log: TurnLog) {
 }
 
 function endTurn(s: State): boolean {
+  if (s.master) s.master.cd = s.master.cd.map((c) => Math.max(0, c - 1));
   for (const a of s.actors) {
+    if (!a.fired && s.cardNp) a.gauge = Math.min(30000, a.gauge + s.cardNp);
+    a.fired = false;
     for (const b of a.buffs) if (b.t === 'regainNp') a.gauge = Math.min(30000, a.gauge + b.val);
     for (const b of a.buffs) if (b.turn > 0) b.turn--;
     a.buffs = a.buffs.filter((b) => b.turn !== 0);
@@ -300,10 +315,16 @@ function endTurn(s: State): boolean {
   return false;
 }
 
+function masterActor(skills: Skill[]): Actor {
+  const svt = { id: 0, no: 0, name: '마스터', cls: '', rarity: 0, cost: 0, attr: '', traits: [], atk: { max: 0, 100: 0, 120: 0 }, skills, np: null, passive: [], face: '' } as Servant;
+  return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false };
+}
+
 export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimOptions): SimResult {
   const s: State = {
-    actors: front.map((cfg) => ({ cfg, gauge: cfg.startNp, buffs: [], cd: cfg.svt.skills.map(() => 0) })),
+    actors: front.map((cfg) => ({ cfg, gauge: cfg.startNp, buffs: [], cd: cfg.svt.skills.map(() => 0), fired: false })),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0,
+    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0,
   };
   for (const a of s.actors) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   const total = quest.waves.reduce((n, w) => n + w.length, 0);
@@ -320,10 +341,10 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
 }
 
 /** 두 가지 스킬 운용 방침을 모두 돌려 더 나은 결과를 고른다. */
-export function simulateBest(front: ActorCfg[], quest: QuestData, rel: Rel, maxTurns: number, roll: number): SimResult {
-  const a = simulate(front, quest, rel, { maxTurns, roll, mode: 'lazy' });
+export function simulateBest(front: ActorCfg[], quest: QuestData, rel: Rel, maxTurns: number, roll: number, extra: SimExtra = {}): SimResult {
+  const a = simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'lazy' });
   if (a.cleared && a.turns <= quest.waves.length) return a;
-  const b = simulate(front, quest, rel, { maxTurns, roll, mode: 'eager' });
+  const b = simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'eager' });
   if (a.cleared !== b.cleared) return a.cleared ? a : b;
   if (a.cleared) return b.turns < a.turns ? b : a;
   return b.killed > a.killed ? b : a;
