@@ -13,6 +13,8 @@ export interface CEStock { ce: BondCE; count: number; mlb: boolean; /** 보유�
 export interface Settings {
   maxTurns: number; costCap: number; roll: number; startNp: number;
   friendCe: { no: number; mlb: boolean } | null; topN: number;
+  /** 프렌드 서번트의 어펜드: 시작 NP(어펜드 2)와 스킬 재장전 횟수(어펜드 5). 없으면 startNp·reload와 같게 본다. */
+  friendAppendNp?: number; friendReload?: number;
   /** 프렌드가 인연 예장 대신 시작 NP 예장을 낀 경우의 추가 시작 NP (10000 = 100%). friendCe와 함께 쓸 수 없다. */
   friendStartNp?: number;
   /** 찻주전자 배수(1 = 미사용). 최종 인연 포인트에 곱해진다. */
@@ -79,7 +81,7 @@ export function search(
   const cfg = (p: PoolEntry, role: 'dealer' | 'support', plusAtk = 0): ActorCfg =>
     ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk + plusAtk, startNp: p.startNp ?? st.startNp, reload: p.reload ?? st.reload ?? 0, role });
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
-    ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp + (st.friendStartNp ?? 0), reload: st.reload ?? 0, role, friend: true });
+    ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: (st.friendAppendNp ?? st.startNp) + (st.friendStartNp ?? 0), reload: st.friendReload ?? st.reload ?? 0, role, friend: true });
   // 예장 ATK: 보유한 인연 예장 중 ATK가 가장 높은 것을 주 딜러에게 끼운다고 본다.
   // 예장 없이도 클리어되는 편성은 그대로 두고, 안 되는 편성만 이 예장을 낀 조건으로 다시 계산한다.
   const ceAtkOf = (s: CEStock) => s.atk ?? s.ce.atk;

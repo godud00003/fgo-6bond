@@ -502,7 +502,8 @@ function playRelay(s: State, log: TurnLog): boolean {
     const i = s.actors.indexOf(d);
     const c = cloneState(s);
     if (!prepareSolo(c, i, expendable)) continue;
-    const cost = c.used - s.used;
+    // 스킬을 같은 만큼 쓴다면 약한 쪽이 먼저 쏜다: 앞 웨이브일수록 적이 약하므로 강한 쪽을 뒤 웨이브에 남긴다
+    const cost = (c.used - s.used) * 1e6 + d.cfg.atk;
     if (cost < bestCost) { bestCost = cost; best = i; }
   }
   if (best < 0) return false;

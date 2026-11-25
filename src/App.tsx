@@ -9,11 +9,11 @@ interface Data { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<
 import { importLogin, type Roster, type RosterEntry, type Stock } from './engine/importLogin.ts';
 
 interface Prefs {
-  poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fou: number;
+  poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fAppend2: boolean; fAppend5: boolean; fou: number;
   friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -166,6 +166,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const [fNo, fMlb] = prefs.friendCe.split(':');
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0, reload: prefs.append5 ? 3 : 0,
+      friendAppendNp: (prefs.fAppend2 ?? true) ? 2000 : 0, friendReload: (prefs.fAppend5 ?? true) ? 3 : 0,
       // 프렌드 예장 칸은 하나: 인연 예장이거나, 시작 NP 예장(np:수치)이거나
       friendCe: fNo && fNo !== 'np' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
@@ -295,8 +296,10 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           <label className="check" title="서포터 하나의 스킬을 다 쓴 뒤 후열의 다른 서포터와 바꾸는 편성도 찾습니다. 오더 체인지가 있는 마술예장(칼데아 전투복, 결전용 칼데아 제복)을 쓸 때만 적용됩니다. 계산이 조금 더 오래 걸립니다.">
             <input type="checkbox" checked={!!prefs.oc} onChange={(e) => set('oc', e.target.checked)} /> 오더 체인지 사용 (전투복·결전용 제복)
           </label>
-          <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 스킬 2 (시작 NP 20%) 적용</label>
-          <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 어펜드 스킬 5 (쿨타임 -1) 적용</label>
+          <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 2 (시작 NP 20%)</label>
+          <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 5 (쿨타임 -1)</label>
+          <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 2를 열었는지. 빌리는 상대에 따라 다르니 실제 프렌드에 맞게 고르세요."><input type="checkbox" checked={prefs.fAppend2 ?? true} onChange={(e) => set('fAppend2', e.target.checked)} /> 프렌드: 어펜드 스킬 2 (시작 NP 20%)</label>
+          <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 5를 Lv10까지 올렸는지."><input type="checkbox" checked={prefs.fAppend5 ?? true} onChange={(e) => set('fAppend5', e.target.checked)} /> 프렌드: 어펜드 스킬 5 (쿨타임 -1)</label>
         </div>
         <MustPicker
           servants={prefs.poolMode === 'owned' ? data.servants.filter((s) => roster[s.no]?.owned) : data.servants}
