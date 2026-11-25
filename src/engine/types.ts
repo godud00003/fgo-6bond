@@ -32,6 +32,7 @@ export interface ActorCfg {
   svt: Servant;
   npLv: number;       // 1~5
   skillLv: number;    // 1~10
+  skillLvs?: number[]; // 스킬별 레벨(있으면 skillLv 대신 사용)
   atk: number;        // 성배·포우 포함 최종 ATK
   startNp: number;    // 시작 NP (10000 = 100%)
   role: 'dealer' | 'support' | 'filler' | 'master';

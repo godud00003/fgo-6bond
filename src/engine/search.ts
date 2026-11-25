@@ -2,7 +2,11 @@
 import { simulateBest } from './sim.ts';
 import type { ActorCfg, BondCE, QuestData, Rel, Servant, SimResult, Skill } from './types.ts';
 
-export interface PoolEntry { svt: Servant; npLv: number; skillLv: number; atk: number; weight: number; bond15?: boolean }
+export interface PoolEntry {
+  svt: Servant; npLv: number; skillLv: number; atk: number; weight: number; bond15?: boolean;
+  /** 스킬별 레벨, 서번트별 시작 NP(없으면 공통 설정) */
+  skillLvs?: number[]; startNp?: number;
+}
 export interface CEStock { ce: BondCE; count: number; mlb: boolean }
 export interface Settings {
   maxTurns: number; costCap: number; roll: number; startNp: number;
@@ -35,7 +39,7 @@ export function search(
   const byNo = new Map(pool.map((p) => [p.svt.no, p]));
   const allByNo = new Map(all.map((s) => [s.no, s]));
   const cfg = (p: PoolEntry, role: 'dealer' | 'support'): ActorCfg =>
-    ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, atk: p.atk, startNp: st.startNp, role });
+    ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk, startNp: p.startNp ?? st.startNp, role });
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
     ({ svt: s, npLv: 1, skillLv: 10, atk: s.atk.max + 1000, startNp: st.startNp, role, friend: true });
   const extra = { mc: st.mc, cardNp: st.cardNp };

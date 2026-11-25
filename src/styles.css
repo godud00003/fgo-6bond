@@ -19,6 +19,8 @@ a { color: var(--accent); }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .error { color: #d1383d; }
+.ok { color: #1f8a4c; }
+.imported { flex-basis: 100%; color: var(--muted, #667); }
 .warn { background: var(--warn-bg); color: var(--warn-ink); padding: 8px 12px; border-radius: 8px; }
 nav { display: flex; gap: 6px; margin: 14px 0 16px; flex-wrap: wrap; }
 button, select, input { font: inherit; color: inherit; }

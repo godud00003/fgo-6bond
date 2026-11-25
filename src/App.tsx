@@ -4,9 +4,8 @@ import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './
 import type { BondCE, MysticCode, QuestData, Rel, Servant, War } from './engine/types.ts';
 
 interface Data { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel; mcs: MysticCode[] }
-interface RosterEntry { owned: boolean; npLv: number; lv: 'max' | '100' | '120'; skillLv: number; bondMax: boolean; bond15?: boolean }
-type Roster = Record<number, RosterEntry>;
-type Stock = Record<number, { count: number; mlb: boolean }>;
+import { importLogin, type Roster, type RosterEntry, type Stock } from './engine/importLogin.ts';
+
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
   friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number;
@@ -53,6 +52,16 @@ export default function App() {
       .catch((e) => setError(String(e)));
   }, []);
 
+  /** 게임 로그인 데이터를 읽어 보유 서번트·인연 예장·코스트 상한을 한 번에 채운다(브라우저 안에서만 처리) */
+  const onLogin = async (f: File): Promise<string> => {
+    if (!data) return '';
+    const r = importLogin(await f.text(), data.servants, data.ces);
+    setRoster(r.roster);
+    setStock(r.stock);
+    setPrefs((p) => ({ ...p, poolMode: 'owned', costCap: r.costCap ?? p.costCap }));
+    return `가져왔습니다: 서번트 ${r.servants}기, 인연 예장 ${r.ceKinds}종 ${r.ceCopies}장${r.costCap ? `, 코스트 상한 ${r.costCap}` : ''}. 서번트 풀은 "내 보유 서번트만"으로 바꿨고, 이 브라우저에 저장했습니다.`;
+  };
+
   if (error) return <div className="app"><p className="error">데이터를 불러오지 못했습니다: {error}</p></div>;
   if (!data) return <div className="app"><p className="muted">데이터를 불러오는 중…</p></div>;
   const owned = Object.values(roster).filter((r) => r.owned).length;
@@ -69,7 +78,7 @@ export default function App() {
         </nav>
       </header>
       <div hidden={tab !== 'party'}><PartyTab data={data} roster={roster} stock={stock} prefs={prefs} setPrefs={setPrefs} /></div>
-      {tab === 'roster' && <RosterTab data={data} roster={roster} setRoster={setRoster} />}
+      {tab === 'roster' && <RosterTab data={data} roster={roster} setRoster={setRoster} onLogin={onLogin} />}
       {tab === 'ce' && <CETab data={data} stock={stock} setStock={setStock} />}
       <footer className="muted">
         게임 데이터: Atlas Academy (서번트·예장·퀘스트는 한국 서버, 적 구성은 같은 퀘스트의 일본 서버 데이터).
@@ -90,7 +99,8 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
     const useOwn = !!r?.owned;
     out.push({
       svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn ? r.skillLv : 10,
-      atk: svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
+      skillLvs: useOwn ? r.skills : undefined, startNp: useOwn ? r.startNp : undefined,
+      atk: useOwn && r.atk ? r.atk : svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
     });
   }
   return out;
@@ -346,7 +356,14 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
 
 const NEW_ENTRY: RosterEntry = { owned: true, npLv: 1, lv: 'max', skillLv: 10, bondMax: false, bond15: false };
 
-function RosterTab({ data, roster, setRoster }: { data: Data; roster: Roster; setRoster: (v: Roster | ((p: Roster) => Roster)) => void }) {
+function RosterTab({ data, roster, setRoster, onLogin }: {
+  data: Data; roster: Roster; setRoster: (v: Roster | ((p: Roster) => Roster)) => void; onLogin: (f: File) => Promise<string>;
+}) {
+  const loginFile = useRef<HTMLInputElement>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const doLogin = async (f: File) => {
+    try { setMsg({ ok: true, text: await onLogin(f) }); setOnlyOwned(true); } catch (e) { setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+  };
   const [q, setQ] = useState('');
   const [cls, setCls] = useState('');
   const [onlyOwned, setOnlyOwned] = useState(false);
@@ -371,6 +388,13 @@ function RosterTab({ data, roster, setRoster }: { data: Data; roster: Roster; se
         <h2>내 서번트</h2>
         <p className="muted small">보유한 서번트를 체크하세요. "인연 MAX"로 표시한 서번트는 전투에는 쓰지만 인연 합계에서 빼고, 인연을 받는 자리에는 넣지 않습니다. "인연 15"로 표시한 서번트는 파티에 있으면 다른 파티원 전원의 인연이 25% 늘어납니다. 이 브라우저에 저장됩니다.</p>
         <div className="row">
+          <button className="primary" onClick={() => loginFile.current?.click()}>게임 로그인 데이터 가져오기</button>
+          <input ref={loginFile} type="file" accept=".txt,.json,application/json,text/plain" hidden
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void doLogin(f); }} />
+          <span className="muted small">로그인 응답 파일(예: fgo_login_kr.txt)을 고르면 보유 서번트, 레벨·보구·스킬·어펜드, 인연 레벨, 인연 예장, 코스트 상한이 한 번에 채워집니다. 파일은 이 브라우저 안에서만 읽고, 기존 등록 내용은 덮어씁니다.</span>
+        </div>
+        {msg && <p className={msg.ok ? 'ok' : 'error'}>{msg.text}</p>}
+        <div className="row">
           <input className="grow" placeholder="이름 검색" value={q} onChange={(e) => setQ(e.target.value)} />
           <select value={cls} onChange={(e) => setCls(e.target.value)}>
             <option value="">모든 클래스</option>
@@ -378,8 +402,8 @@ function RosterTab({ data, roster, setRoster }: { data: Data; roster: Roster; se
           </select>
           <label className="check"><input type="checkbox" checked={onlyOwned} onChange={(e) => setOnlyOwned(e.target.checked)} /> 보유만</label>
           <button onClick={() => setRoster((r) => { const n = { ...r }; for (const s of list) n[s.no] = { ...NEW_ENTRY, ...n[s.no], owned: true }; return n; })}>표시된 서번트 모두 보유</button>
-          <button onClick={exportJson}>내보내기</button>
-          <button onClick={() => file.current?.click()}>가져오기</button>
+          <button onClick={exportJson}>백업 내보내기</button>
+          <button onClick={() => file.current?.click()}>백업 가져오기</button>
           <input ref={file} type="file" accept="application/json" hidden onChange={(e) => e.target.files?.[0] && void importJson(e.target.files[0])} />
         </div>
         <div className="roster">
@@ -395,13 +419,18 @@ function RosterTab({ data, roster, setRoster }: { data: Data; roster: Roster; se
                 {r?.owned && (
                   <div className="rctl small">
                     <label>보구 <NumSel v={r.npLv} on={(v) => upd(s.no, { npLv: v })} /></label>
+                    {r.atk !== undefined && (
+                      <span className="imported">
+                        Lv {r.level} · ATK {r.atk.toLocaleString()}{r.skills ? ` · 스킬 ${r.skills.join('/')}` : ''} · 시작 NP {(r.startNp ?? 0) / 100}%{r.bond !== undefined ? ` · 인연 ${r.bond}` : ''}
+                      </span>
+                    )}
                     <label>레벨
-                      <select value={r.lv} onChange={(e) => upd(s.no, { lv: e.target.value as RosterEntry['lv'] })}>
+                      <select value={r.lv} onChange={(e) => upd(s.no, { lv: e.target.value as RosterEntry['lv'], atk: undefined, level: undefined })}>
                         <option value="max">기본 최대</option><option value="100">100</option><option value="120">120</option>
                       </select>
                     </label>
                     <label>스킬
-                      <select value={r.skillLv} onChange={(e) => upd(s.no, { skillLv: Number(e.target.value) })}>
+                      <select value={r.skillLv} onChange={(e) => upd(s.no, { skillLv: Number(e.target.value), skills: undefined })}>
                         {[10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map((n) => <option key={n} value={n}>{n}</option>)}
                       </select>
                     </label>

@@ -219,6 +219,7 @@ function wouldClear(s: State): boolean {
 
 interface SkillRef { a: Actor; i: number }
 const skillFns = (r: SkillRef) => r.a.cfg.svt.skills[r.i].fn;
+const skillLvOf = (r: SkillRef) => r.a.cfg.skillLvs?.[r.i] ?? r.a.cfg.skillLv;
 function chargeFor(r: SkillRef, target: Actor): number {
   let sum = 0;
   for (const fn of skillFns(r)) {
@@ -226,7 +227,7 @@ function chargeFor(r: SkillRef, target: Actor): number {
     const hit = fn.tg === 'self' ? r.a === target
       : fn.tg === 'ptAll' || fn.tg === 'ptFull' || fn.tg === 'ptOne' ? true
         : fn.tg === 'ptOther' || fn.tg === 'ptOtherFull' ? r.a !== target : false;
-    if (hit) sum += svAt(fn, r.a.cfg.skillLv - 1).Value ?? 0;
+    if (hit) sum += svAt(fn, skillLvOf(r) - 1).Value ?? 0;
   }
   return sum;
 }
@@ -240,8 +241,9 @@ function available(s: State): SkillRef[] {
 }
 function useSkill(s: State, r: SkillRef, target: Actor, log?: TurnLog) {
   const sk = r.a.cfg.svt.skills[r.i];
-  for (const fn of sk.fn) applyFn(s, r.a, fn, r.a.cfg.skillLv - 1, target);
-  r.a.cd[r.i] = sk.cd[Math.min(r.a.cfg.skillLv, sk.cd.length) - 1];
+  const lv = skillLvOf(r);
+  for (const fn of sk.fn) applyFn(s, r.a, fn, lv - 1, target);
+  r.a.cd[r.i] = sk.cd[Math.min(lv, sk.cd.length) - 1];
   const needsTarget = sk.fn.some((f) => f.tg === 'ptOne');
   log?.skills.push({ who: r.a.cfg.svt.name, skill: sk.name, target: needsTarget ? target.cfg.svt.name : undefined });
 }

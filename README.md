@@ -11,12 +11,17 @@ npm run dev
 
 게임 데이터(`public/data/`)는 포함되어 있다. 한국 서버 업데이트 후 갱신하려면 `npm run data`.
 
+## 내 계정 불러오기
+
+"내 서번트" 탭의 "게임 로그인 데이터 가져오기"에 게임 로그인 응답 파일(Chaldea의 HTTPS 스니핑 가져오기와 같은 형식, 예: `fgo_login_kr.txt`)을 넣으면 보유 서번트, 레벨·ATK(포우 포함)·보구 레벨·스킬별 레벨·어펜드 2, 인연 레벨(인연 MAX·인연 15), 보유 인연 예장과 해방 여부, 코스트 상한이 한 번에 채워진다. 파일은 브라우저 안에서만 읽고 필요한 수치만 localStorage에 저장한다. 이 파일에는 계정 정보가 들어 있으니 저장소에 넣지 않는다.
+
 ## 구조
 
 - `scripts/build-data.mjs` — Atlas Academy 원본을 앱용 JSON으로 변환
 - `src/engine/quest.ts` — 퀘스트명 해석("2부 6장 4절 2번째 배틀"), 적 데이터 변환
 - `src/engine/sim.ts` — 보구 전용 전투 시뮬레이터(클리어 판정)
 - `src/engine/search.ts` — 전열 조합 탐색 + 인연 포인트 최적화
+- `src/engine/importLogin.ts` — 게임 로그인 데이터에서 보유 현황 추출
 - `src/App.tsx` — 화면
 - `test/run.ts` — 명령줄 검증: `node test/run.ts "2부 6장 4절 2번째 배틀"`
 
