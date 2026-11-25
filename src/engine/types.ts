@@ -1,6 +1,7 @@
 export interface Sv {
   Rate?: number; Turn?: number; Count?: number; Value?: number; Value2?: number;
   Correction?: number; Target?: number; TargetRarityList?: number[];
+  TargetList?: number[]; ParamAddMaxCount?: number; AndCheckIndividualityList?: number[]; FieldIndividuality?: number[];
 }
 export interface BuffDef {
   t: string; cs?: number[]; co?: number[]; v?: number[]; ur?: number[];
@@ -9,7 +10,11 @@ export interface BuffDef {
   /** t가 'turnEnd'일 때: 턴 종료 시 보유자에게 일어나는 일 */
   te?: { t: 'lossNp' | 'gainNp' | 'clear' | 'disable'; v?: number }[];
 }
-export interface Fn { t: string; tg: string; sv: Sv | Sv[]; tv?: number[]; qtv?: number[]; b?: BuffDef[] }
+export interface Fn {
+  t: string; tg: string; sv: Sv | Sv[]; tv?: number[]; qtv?: number[]; b?: BuffDef[];
+  /** 오버차지 2~5단계의 수치(보구만, 1단계와 다를 때만) */
+  oc?: (Sv | Sv[])[];
+}
 export interface Skill {
   name: string; cd: number[]; fn: Fn[];
   /** 배틀 개시 시의 선쿨타임(레벨별) */
@@ -59,6 +64,8 @@ export interface ActorCfg {
   startNp: number;    // 시작 NP (10000 = 100%)
   role: 'dealer' | 'support' | 'filler' | 'master';
   friend?: boolean;
+  /** 어펜드 스킬 5(스킬 재장전)의 남은 횟수: 스킬을 처음 쓸 때 쿨타임이 1 줄어든다(스킬마다 1회) */
+  reload?: number;
   /** 후열에서 시작한다. 전열이 퇴장하거나 오더 체인지를 쓰면 들어온다. */
   bench?: boolean;
   /** 오더 체인지로 내보낼 서번트. 스킬을 다 쓴 뒤 후열 선두와 바꾼다. */
@@ -70,6 +77,10 @@ export interface MysticCode { id: number; name: string; skills: Skill[] }
 
 export interface EnemyDef {
   name: string; cls: string; attr: string; traits: number[]; bars: number[]; tdRate: number; deckId: number;
+  /** 레어도(레어도 특공 판정용) */
+  rarity?: number;
+  /** 전투 시작부터 걸려 있는 패시브 중 받는 대미지에 영향을 주는 것(방어력, 대미지 컷, 회피 등) */
+  passive?: { t: string; val: number; turn: number; count: number; cs?: number[]; co?: number[] }[];
   /** 이 적이 살아 있는 동안 빈자리에 불러내는 증원(순서대로, 반복 소환) */
   call?: EnemyDef[];
 }

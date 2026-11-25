@@ -34,7 +34,7 @@ const mcs: MysticCode[] = j('mcs.json');
 // NODUP=1 이면 동일 서번트 편성 제외
 // MUST=도감번호,도감번호 이면 그 서번트를 반드시 포함
 // MC=auto 마술예장 자동 선택 / MC=예장 id, OC=1 오더 체인지 편성 포함
-const st = { must: (process.env.MUST || '').split(',').filter(Boolean).map(Number), allowDup: !process.env.NODUP, lv1, mc: mcs.find((m) => m.id === Number(process.env.MC)) ?? null, mcAuto: process.env.MC === 'auto' ? mcs : undefined, orderChange: !!process.env.OC, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
+const st = { reload: process.env.NORELOAD ? 0 : 3, must: (process.env.MUST || '').split(',').filter(Boolean).map(Number), allowDup: !process.env.NODUP, lv1, mc: mcs.find((m) => m.id === Number(process.env.MC)) ?? null, mcAuto: process.env.MC === 'auto' ? mcs : undefined, orderChange: !!process.env.OC, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
 const t0 = Date.now();
 const out = search(pool, servants, stock, quest, rel, st);
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0);

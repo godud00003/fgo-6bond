@@ -10,6 +10,8 @@ export interface RosterEntry {
   fou?: number;
   /** 스킬 1~3의 레벨. 있으면 skillLv 대신 쓴다. */
   skills?: number[];
+  /** 어펜드 스킬 5(스킬 재장전) 횟수: 스킬을 처음 쓸 때 쿨타임 1 감소(Lv1~5 1회, Lv6~9 2회, Lv10 3회). 없으면 조건 탭의 설정을 따른다. */
+  reload?: number;
   /** 어펜드 스킬 2로 얻는 시작 NP (10000 = 100%). 없으면 조건 탭의 설정을 따른다. */
   startNp?: number;
   /** 편성 화면에 보이는 영기재림 단계(0~4). 단계별로 특성이 다른 서번트의 판정에 쓴다. */
@@ -48,9 +50,13 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
 
   const collection = new Map<number, any>((tables.userSvtCollection ?? []).map((c: any) => [c.svtId, c]));
   const appendByUserSvt = new Map<number, number>();
+  const append5ByUserSvt = new Map<number, number>();
   for (const a of tables.userSvtAppendPassiveSkillLv ?? []) {
     const i = (a.appendPassiveSkillNums ?? []).indexOf(101);
     if (i >= 0) appendByUserSvt.set(a.userSvtId, a.appendPassiveSkillLvs?.[i] ?? 0);
+    // 어펜드 스킬 5(스킬 재장전)는 번호 104
+    const k = (a.appendPassiveSkillNums ?? []).indexOf(104);
+    if (k >= 0) append5ByUserSvt.set(a.userSvtId, a.appendPassiveSkillLvs?.[k] ?? 0);
   }
 
   const svtById = new Map(servants.map((s) => [s.id, s]));
@@ -86,6 +92,7 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
       atk: u.atk, fou: (u.adjustAtk ?? 0) * 10, level: u.lv, bond,
       asc: u.dispLimitCount !== undefined && u.dispLimitCount >= 0 && u.dispLimitCount <= 4 ? u.dispLimitCount : undefined,
       startNp: appendLv > 0 ? APPEND2[Math.min(appendLv, 10) - 1] * 100 : 0,
+      reload: ((lv) => (lv >= 10 ? 3 : lv >= 6 ? 2 : lv >= 1 ? 1 : 0))(append5ByUserSvt.get(u.id) ?? 0),
       bondMax: bond >= bondCap, bond15: bond >= 15,
     };
   }

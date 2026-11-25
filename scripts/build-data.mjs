@@ -38,6 +38,13 @@ const BUFFS = new Set([
   'upAtk', 'downAtk', 'upCommandall', 'downCommandall', 'upNpdamage', 'downNpdamage', 'upDamage',
   'upDropnp', 'downDropnp', 'downDefence', 'upDefence', 'downDefencecommandall', 'regainNp',
   'addDamage', 'buffRate', 'pierceInvincible',
+  // 오버차지 단계 UP, 특성 특공(대상의 특성 / 대상에게 걸린 상태), 특성 부여, 필드 특성 부여, 방어 무시
+  'breakAvoidance', 'upChagetd', 'upDamageIndividuality', 'upDamageIndividualityActiveonly', 'addIndividuality', 'fieldIndividuality', 'pierceDefence',
+]);
+// 버프가 아닌 효과 중 계산에 넣는 것
+const PLAIN_FN = new Set([
+  'gainNp', 'lossNp', 'shortenSkill', 'forceInstantDeath', 'replaceMember',
+  'gainNpBuffIndividualSum', 'gainNpIndividualSum', 'gainNpTargetSum', 'gainMultiplyNp', 'addFieldChangeToField',
 ]);
 // 적에게 걸리는 버프 중 계산에 넣는 것: 무적(오베론 보구의 단점 — 같은 턴의 뒤따르는 공격이 막힌다)
 const ENEMY_BUFFS = new Set(['invincible']);
@@ -72,7 +79,7 @@ const DAMAGE = new Set([
   'damageNp', 'damageNpIndividual', 'damageNpPierce', 'damageNpIndividualSum', 'damageNpStateIndividualFix',
   'damageNpHpratioLow', 'damageNpRare', 'damageNpAndOrCheckIndividuality', 'damageNpBattlePointPhase',
 ]);
-const SV_KEYS = ['Rate', 'Turn', 'Count', 'Value', 'Value2', 'Correction', 'Target', 'TargetRarityList'];
+const SV_KEYS = ['Rate', 'Turn', 'Count', 'Value', 'Value2', 'Correction', 'Target', 'TargetRarityList', 'TargetList', 'ParamAddMaxCount', 'AndCheckIndividualityList', 'FieldIndividuality'];
 
 function pickSv(sv) {
   const o = {};
@@ -103,13 +110,26 @@ function compactFn(f, levels) {
     });
     buffs.push(...turnEnd);
     if (!buffs.length) return null;
-  } else if (!isDamage && !['gainNp', 'lossNp', 'shortenSkill', 'forceInstantDeath', 'replaceMember'].includes(f.funcType)) {
+  } else if (f.funcType === 'gainNpFromTargets') {
+    // 다른 아군의 NP를 줄이고 줄인 만큼 얻는 효과만 옮긴다(적의 차지를 빼앗는 쪽은 적 행동을 계산하지 않으므로 제외)
+    const dep = f.svals[0]?.DependFunc;
+    if (dep?.funcType !== 'lossNp' || dep.funcTargetTeam === 'enemy') return null;
+    return { t: 'absorbNp', tg: dep.funcTargetType, sv: f.svals.slice(0, levels).map((sv) => ({ Rate: sv.Rate, Value: sv.DependFuncVals?.Value ?? 0 }))[levels - 1] ?? { Value: 0 } };
+  } else if (!isDamage && !PLAIN_FN.has(f.funcType)) {
     return null;
   }
   if (f.svals[0]?.StarHigher) return null; // 스타가 일정 수 이상일 때만 발동(스타는 계산하지 않는다)
   const svs = f.svals.slice(0, levels).map(pickSv);
   const same = svs.every((s) => JSON.stringify(s) === JSON.stringify(svs[0]));
   const o = { t: f.funcType, tg: f.funcTargetType, sv: same ? svs[0] : svs };
+  // 오버차지 2~5단계의 수치(1단계와 다를 때만). 보구에만 있다.
+  if (f.svals2?.length) {
+    const ocs = [f.svals2, f.svals3, f.svals4, f.svals5].map((list) => {
+      const l = (list || f.svals).slice(0, levels).map(pickSv);
+      return l.every((s) => JSON.stringify(s) === JSON.stringify(l[0])) ? l[0] : l;
+    });
+    if (ocs.some((x) => JSON.stringify(x) !== JSON.stringify(o.sv))) o.oc = ocs;
+  }
   if (f.functvals?.length) o.tv = ids(f.functvals);
   if (f.funcquestTvals?.length) o.qtv = ids(f.funcquestTvals);
   if (buffs) o.b = buffs;

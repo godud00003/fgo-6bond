@@ -9,11 +9,11 @@ interface Data { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<
 import { importLogin, type Roster, type RosterEntry, type Stock } from './engine/importLogin.ts';
 
 interface Prefs {
-  poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; fou: number;
+  poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fou: number;
   friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false,
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -106,7 +106,7 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
     const stage = useOwn && svt.asc ? svt.asc[r.asc ?? 4] : undefined;
     out.push({
       svt: stage ? { ...svt, traits: stage } : svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn ? r.skillLv : 10,
-      skillLvs: useOwn ? r.skills : undefined, startNp: useOwn ? r.startNp : undefined,
+      skillLvs: useOwn ? r.skills : undefined, startNp: useOwn ? r.startNp : undefined, reload: useOwn ? r.reload : undefined,
       // 레벨 1 고정 퀘스트: 레벨 1 ATK + 포우 강화(가져온 서번트는 실제 강화량)
       atk: prefs.lv1 ? svt.atk[1] + (useOwn && r.fou !== undefined ? r.fou : prefs.fou)
         : useOwn && r.atk ? r.atk : svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
@@ -165,7 +165,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const ceStock: CEStock[] = data.ces.map((ce) => ({ ce, count: stock[ce.no]?.count ?? 1, mlb: stock[ce.no]?.mlb ?? true, atk: stock[ce.no]?.atk ?? ce.atk }));
     const [fNo, fMlb] = prefs.friendCe.split(':');
     const settings: Settings = {
-      maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0,
+      maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0, reload: prefs.append5 ? 3 : 0,
       friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
       mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
@@ -292,6 +292,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
             <input type="checkbox" checked={!!prefs.oc} onChange={(e) => set('oc', e.target.checked)} /> 오더 체인지 사용 (전투복·결전용 제복)
           </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 스킬 2 (시작 NP 20%) 적용</label>
+          <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 어펜드 스킬 5 (쿨타임 -1) 적용</label>
         </div>
         <MustPicker
           servants={prefs.poolMode === 'owned' ? data.servants.filter((s) => roster[s.no]?.owned) : data.servants}
@@ -508,7 +509,7 @@ function RosterTab({ data, roster, setRoster, onLogin }: {
                     <label>보구 <NumSel v={r.npLv} on={(v) => upd(s.no, { npLv: v })} /></label>
                     {r.atk !== undefined && (
                       <span className="imported">
-                        Lv {r.level} · ATK {r.atk.toLocaleString()}{r.skills ? ` · 스킬 ${r.skills.join('/')}` : ''} · 시작 NP {(r.startNp ?? 0) / 100}%{r.bond !== undefined ? ` · 인연 ${r.bond}` : ''}
+                        Lv {r.level} · ATK {r.atk.toLocaleString()}{r.skills ? ` · 스킬 ${r.skills.join('/')}` : ''} · 시작 NP {(r.startNp ?? 0) / 100}%{r.reload ? ` · 재장전 ${r.reload}회` : ''}{r.bond !== undefined ? ` · 인연 ${r.bond}` : ''}
                       </span>
                     )}
                     <label>레벨

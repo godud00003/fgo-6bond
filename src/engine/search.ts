@@ -6,6 +6,8 @@ export interface PoolEntry {
   svt: Servant; npLv: number; skillLv: number; atk: number; weight: number; bond15?: boolean;
   /** 스킬별 레벨, 서번트별 시작 NP(없으면 공통 설정) */
   skillLvs?: number[]; startNp?: number;
+  /** 어펜드 스킬 5(스킬 재장전) 횟수(없으면 공통 설정) */
+  reload?: number;
 }
 export interface CEStock { ce: BondCE; count: number; mlb: boolean; /** 보유한 예장의 실제 ATK(없으면 최대 레벨 기준) */ atk?: number }
 export interface Settings {
@@ -13,6 +15,8 @@ export interface Settings {
   friendCe: { no: number; mlb: boolean } | null; topN: number;
   /** 찻주전자 배수(1 = 미사용). 최종 인연 포인트에 곱해진다. */
   teapot: number;
+  /** 어펜드 스킬 5(스킬 재장전)의 기본 횟수: 등록하지 않은 서번트와 프렌드에 적용(0~3) */
+  reload?: number;
   /** 출전 서번트 전원이 레벨 1이 되는 퀘스트(프렌드 포함). 풀의 ATK는 호출하는 쪽에서 이미 레벨 1로 넣는다. */
   lv1?: boolean;
   /** 마술예장(없으면 미사용). mcAuto가 있으면 무시하고 자동으로 고른다. */
@@ -71,9 +75,9 @@ export function search(
   const byNo = new Map(pool.map((p) => [p.svt.no, p]));
   const allByNo = new Map(all.map((s) => [s.no, s]));
   const cfg = (p: PoolEntry, role: 'dealer' | 'support', plusAtk = 0): ActorCfg =>
-    ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk + plusAtk, startNp: p.startNp ?? st.startNp, role });
+    ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk + plusAtk, startNp: p.startNp ?? st.startNp, reload: p.reload ?? st.reload ?? 0, role });
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
-    ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp, role, friend: true });
+    ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp, reload: st.reload ?? 0, role, friend: true });
   // 예장 ATK: 보유한 인연 예장 중 ATK가 가장 높은 것을 주 딜러에게 끼운다고 본다.
   // 예장 없이도 클리어되는 편성은 그대로 두고, 안 되는 편성만 이 예장을 낀 조건으로 다시 계산한다.
   const ceAtkOf = (s: CEStock) => s.atk ?? s.ce.atk;
@@ -226,8 +230,9 @@ export function search(
     for (const d of finishers) if (!top.includes(d)) top.push(d);
   }
 
-  // 딜러 1명으로 안 되면 딜러 2~3명 조합을 시도
-  if (!plain && dealers.length > 1) {
+  // 딜러 2~3명 조합. 딜러 1명 편성이 있더라도 항상 시도한다(인연용 자리가 줄지만 더 적은 조건으로 깨지는 경우가 있다).
+  void plain;
+  if (dealers.length > 1) {
     const single = combos.filter((c) => c.length <= 1);
     for (let i = 0; i < top.length; i++) for (let j = i + 1; j < top.length; j++) {
       for (const c of single) if (tryLineup([deal(top[i], { boost: true }), deal(top[j]), ...c.map((n) => sup(n))], mcList) && c.length === 0) break;

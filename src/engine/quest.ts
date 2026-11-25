@@ -105,6 +105,9 @@ export function namuQuery(longName: string): string {
   return words.length >= 2 ? words.join(' ') : longName;
 }
 
+// 적 패시브 중 시뮬레이터가 읽는 것: 방어력 증감, 보구 대미지 내성 증감, 고정 대미지 컷·추가, 회피·무적
+const ENEMY_PASSIVE = new Set(['upDefence', 'downDefence', 'downDefenceNpdamage', 'upDefenceNpdamage', 'subSelfdamage', 'addSelfdamage', 'avoidance', 'invincible']);
+
 const API = 'https://api.atlasacademy.io';
 
 /** Atlas Academy 응답(일본 서버 전투 데이터)을 시뮬레이터 입력으로 변환한다. */
@@ -118,9 +121,26 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
     const toDef = (e: any): EnemyDef => {
       const bars = [e.hp];
       for (const id of e.enemyScript?.shift || []) { const n = byNpc.get(id); if (n) bars.push(n.hp); }
+      // 적의 패시브: 특성 부여는 특성 목록에 합치고, 받는 대미지에 영향을 주는 버프는 따로 옮긴다
+      const traits: number[] = (e.traits || []).map((t: any) => t.id);
+      const passive: NonNullable<EnemyDef['passive']> = [];
+      const idsOf = (l: any[] | undefined) => (l || []).map((t: any) => t.id);
+      for (const p of [...(e.classPassive?.classPassive || []), ...(e.classPassive?.addPassive || [])]) {
+        for (const fn of p.functions || []) {
+          if ((fn.funcType !== 'addState' && fn.funcType !== 'addStateShort') || fn.funcTargetType !== 'self') continue;
+          const sv = fn.svals?.[0] ?? {};
+          if ((sv.Rate ?? 1000) < 1000) continue;
+          for (const b of fn.buffs || []) {
+            if (b.type === 'addIndividuality') { if (sv.Value) traits.push(sv.Value); continue; }
+            if (!ENEMY_PASSIVE.has(b.type)) continue;
+            passive.push({ t: b.type, val: sv.Value ?? 0, turn: sv.Turn ?? -1, count: sv.Count ?? -1, cs: idsOf(b.ckSelfIndv), co: idsOf(b.ckOpIndv) });
+          }
+        }
+      }
       return {
         name: names[e.svt.id] || e.name, cls: e.svt.className, attr: e.svt.attribute,
-        traits: (e.traits || []).map((t: any) => t.id), bars, tdRate: e.serverMod?.tdRate ?? 1000, deckId: e.deckId,
+        traits, bars, tdRate: e.serverMod?.tdRate ?? 1000, deckId: e.deckId,
+        rarity: e.svt.rarity, passive: passive.length ? passive : undefined,
       };
     };
     // 증원(call 덱): 적 AI가 필드에 빈자리가 있을 때 불러낸다. 소환 목록은 적 개별(enemyScript.call) 또는 웨이브 공통(stage.call).

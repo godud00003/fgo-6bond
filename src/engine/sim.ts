@@ -11,7 +11,13 @@ const isCardTrait = (id: number) => id >= 4001 && id <= 4008;
 const NP_CARD_TRAIT = 4007;
 
 interface Buff { t: string; val: number; turn: number; count: number; d: BuffDef }
-interface Actor { cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[]; fired: boolean; /** 영구수면 등으로 더는 행동할 수 없다 */ disabled?: boolean }
+interface Actor {
+  cfg: ActorCfg; gauge: number; buffs: Buff[]; cd: number[]; fired: boolean;
+  /** 영구수면 등으로 더는 행동할 수 없다 */
+  disabled?: boolean;
+  /** 어펜드 스킬 5: 남은 횟수와, 이미 쿨타임 감소를 받은 스킬 */
+  reload: number; reloaded: boolean[];
+}
 interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean; summoned?: boolean }
 interface State {
   actors: Actor[]; /** 후열에서 대기 중인 서번트(앞에서부터 들어온다) */ bench: Actor[];
@@ -20,6 +26,10 @@ interface State {
   /** 마술예장 스킬을 쓰는 가상의 행동 주체(전투에는 참가하지 않는다) */
   master: Actor | null;
   cardNp: number;
+  /** 전투 중 추가된 필드 특성(보구·스킬의 필드 변경). turn은 남은 턴 */
+  fieldAdd: { trait: number; turn: number }[];
+  /** 이번 계산에서 쓴 스킬 수(같은 턴에 쿨타임이 풀린 스킬을 다시 쓰는지 판단) */
+  used: number;
 }
 
 export interface SimExtra {
@@ -30,10 +40,25 @@ export interface SimExtra {
 }
 export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: 'lazy' | 'eager' }
 
-const svAt = (fn: Fn, idx: number): Sv => (Array.isArray(fn.sv) ? fn.sv[Math.min(idx, fn.sv.length - 1)] : fn.sv);
+const pickLv = (sv: Sv | Sv[], idx: number): Sv => (Array.isArray(sv) ? sv[Math.min(idx, sv.length - 1)] : sv);
+/** 레벨(스킬·보구)과 오버차지 단계에 맞는 수치 */
+const svAt = (fn: Fn, idx: number, oc = 1): Sv => pickLv(oc > 1 && fn.oc ? fn.oc[Math.min(oc, 5) - 2] : fn.sv, idx);
+// 특성은 전투 중 바뀔 수 있다: 특성 부여 버프(addIndividuality), 필드 특성 부여
+const withAdded = (base: number[], buffs: Buff[]) => (buffs.some((b) => b.t === 'addIndividuality') ? [...base, ...buffs.filter((b) => b.t === 'addIndividuality').map((b) => b.val)] : base);
+const actorTraits = (a: Actor) => withAdded(a.cfg.svt.traits, a.buffs);
+const enemyTraits = (e: Enemy) => withAdded(e.def.traits, e.buffs);
+function fieldTraits(s: State): number[] {
+  const out = s.quest.fieldTraits.slice();
+  for (const f of s.fieldAdd) out.push(f.trait);
+  for (const a of s.actors) for (const b of a.buffs) if (b.t === 'fieldIndividuality') out.push(b.val);
+  return out;
+}
+/** 대상이 가진 특성·상태 중 목록에 해당하는 것의 수(중첩 특공, NP 충전량 계산용) */
+const countIndiv = (traits: number[], buffs: Buff[], list: number[]) =>
+  list.filter((t) => traits.includes(t)).length + buffs.filter((b) => b.d.v?.some((x) => list.includes(x))).length;
 const hasAny = (list: number[] | undefined, set: number[]) => !list || !list.length || list.some((x) => set.includes(x));
 
-const cloneActor = (a: Actor): Actor => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), fired: a.fired, disabled: a.disabled, buffs: a.buffs.map((b) => ({ ...b })) });
+const cloneActor = (a: Actor): Actor => ({ cfg: a.cfg, gauge: a.gauge, cd: a.cd.slice(), fired: a.fired, disabled: a.disabled, reload: a.reload, reloaded: a.reloaded.slice(), buffs: a.buffs.map((b) => ({ ...b })) });
 
 function cloneState(s: State): State {
   return {
@@ -41,14 +66,18 @@ function cloneState(s: State): State {
     actors: s.actors.map(cloneActor),
     bench: s.bench.map(cloneActor),
     master: s.master && { ...s.master, cd: s.master.cd.slice(), buffs: [] },
+    fieldAdd: s.fieldAdd.map((f) => ({ ...f })),
     field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, summoned: e.summoned, buffs: e.buffs.map((b) => ({ ...b })) })),
     reserve: s.reserve.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: [] })),
   };
 }
 
+/** 적이 처음부터 가지고 있는 패시브 버프 */
+const passiveBuffs = (def: EnemyDef): Buff[] => (def.passive ?? []).map((p) => ({ t: p.t, val: p.val, turn: p.turn, count: p.count, d: { t: p.t, cs: p.cs, co: p.co } }));
+
 function loadWave(s: State) {
   const defs = s.quest.waves[s.wave].slice().sort((a, b) => a.deckId - b.deckId);
-  const all = defs.map((def) => ({ def, bars: def.bars.slice(), buffs: [], dead: false }));
+  const all = defs.map((def) => ({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false }));
   s.field = all.slice(0, 3);
   s.reserve = all.slice(3);
   summon(s, false); // 웨이브 시작 시 소환(자기 증원 목록을 가진 적만)
@@ -59,7 +88,7 @@ function loadWave(s: State) {
  * 자기 목록(def.call)을 가진 적은 그 적이 살아 있을 때, 웨이브 공통 목록은 적이 하나라도 남아 있을 때 소환된다.
  */
 function summon(s: State, withStage: boolean) {
-  const add = (def: EnemyDef) => { if (s.field.length < 3) s.field.push({ def, bars: def.bars.slice(), buffs: [], dead: false, summoned: true }); };
+  const add = (def: EnemyDef) => { if (s.field.length < 3) s.field.push({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false, summoned: true }); };
   const callers = s.field.filter((e) => !e.dead);
   if (!callers.length) return;
   for (const c of callers) for (const d of c.def.call ?? []) add(d);
@@ -72,10 +101,12 @@ function pickEnemy(s: State): Enemy | undefined {
 }
 
 /** 스킬·보구의 부가 효과 1개를 적용한다. */
-function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | undefined) {
-  const sv = svAt(fn, lvIdx);
+function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | undefined, oc = 1) {
+  const sv = svAt(fn, lvIdx, oc);
   if (sv.Rate !== undefined && sv.Rate < 1000) return; // 확률 효과는 실패로 가정
-  if (fn.qtv?.length && !fn.qtv.some((t) => s.quest.fieldTraits.includes(t))) return;
+  const field = fieldTraits(s);
+  if (fn.qtv?.length && !fn.qtv.some((t) => field.includes(t))) return;
+  if (fn.t === 'addFieldChangeToField') { for (const t of sv.FieldIndividuality ?? []) s.fieldAdd.push({ trait: t, turn: sv.Turn ?? -1 }); return; }
   let allies: Actor[] = [];
   let enemies: Enemy[] = [];
   switch (fn.tg) {
@@ -87,11 +118,31 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
     case 'enemy': { const e = pickEnemy(s); enemies = e ? [e] : []; break; }
     default: return;
   }
-  if (fn.tv?.length) {
-    allies = allies.filter((a) => fn.tv!.some((t) => a.cfg.svt.traits.includes(t)));
-    enemies = enemies.filter((e) => fn.tv!.some((t) => e.def.traits.includes(t)));
-  }
   const v = sv.Value ?? 0;
+  // 특성·상태의 수에 비례하는 NP 충전: tv는 대상 조건이 아니라 세는 특성 목록이다
+  if (fn.t === 'gainNpBuffIndividualSum' || fn.t === 'gainNpIndividualSum' || fn.t === 'gainNpTargetSum') {
+    const list = fn.tv ?? [];
+    for (const a of allies) {
+      let n: number;
+      if (fn.t === 'gainNpBuffIndividualSum') n = a.buffs.filter((b) => b.d.v?.some((x) => list.includes(x))).length;
+      else {
+        // Value2: 세는 대상 (0 본인, 1 아군 전체, 2 적 전체, 3 전원, 4 본인 제외 전원)
+        const kind = sv.Value2 ?? 0;
+        const al = kind === 0 ? [a] : kind === 2 ? [] : s.actors.filter((x) => kind !== 4 || x !== a);
+        const en = kind === 0 || kind === 1 ? [] : alive(s);
+        n = al.reduce((c, x) => c + countIndiv(actorTraits(x), x.buffs, list), 0) + en.reduce((c, e) => c + countIndiv(enemyTraits(e), e.buffs, list), 0);
+      }
+      a.gauge = Math.min(30000, a.gauge + v * n);
+    }
+    return;
+  }
+  if (fn.tv?.length) {
+    allies = allies.filter((a) => fn.tv!.some((t) => actorTraits(a).includes(t)));
+    enemies = enemies.filter((e) => fn.tv!.some((t) => enemyTraits(e).includes(t)));
+  }
+  if (fn.t === 'gainMultiplyNp') { for (const a of allies) a.gauge = Math.min(30000, a.gauge + Math.floor((a.gauge * v) / 1000)); return; }
+  // 다른 아군의 NP를 줄이고, 줄어든 만큼 자신이 얻는다
+  if (fn.t === 'absorbNp') { let got = 0; for (const a of allies) { const d = Math.min(a.gauge, v); a.gauge -= d; got += d; } user.gauge = Math.min(30000, user.gauge + got); return; }
   if (fn.t === 'gainNp') for (const a of allies) a.gauge = Math.min(30000, a.gauge + v);
   else if (fn.t === 'lossNp') for (const a of allies) a.gauge = Math.max(0, a.gauge - v);
   // 쿨타임 단축: Value2가 있으면 그 번호의 스킬만 줄인다(예: 토네리코 보구는 3스킬만)
@@ -100,7 +151,7 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
     for (const d of fn.b) {
       const mk = (): Buff => ({ t: d.t, val: v, turn: sv.Turn ?? -1, count: sv.Count ?? -1, d });
       // 특성 조건이 붙은 버프는 보유자나 필드가 그 특성을 가질 때만 건다
-      const ok = (a: Actor) => !d.si?.length || d.si.some((t) => a.cfg.svt.traits.includes(t) || s.quest.fieldTraits.includes(t));
+      const ok = (a: Actor) => !d.si?.length || d.si.some((t) => actorTraits(a).includes(t) || field.includes(t));
       for (const a of allies) if (ok(a)) a.buffs.push(mk());
       for (const e of enemies) e.buffs.push(mk());
     }
@@ -108,33 +159,41 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
 }
 
 /** 공격자 쪽 버프가 이번 보구 공격에 적용되는지 */
-function attackerBuffApplies(b: Buff, att: Actor, card: string, def: EnemyDef): boolean {
+function attackerBuffApplies(b: Buff, attTraits: number[], card: string, defTraits: number[]): boolean {
   const cs = b.d.cs;
   if (cs?.length) {
     const cardIds = cs.filter(isCardTrait);
     const other = cs.filter((x) => !isCardTrait(x));
     if (cardIds.length && !cardIds.includes(CARD_TRAIT[card]) && !cardIds.includes(NP_CARD_TRAIT)) return false;
-    if (other.length && !other.some((x) => att.cfg.svt.traits.includes(x))) return false;
+    if (other.length && !other.some((x) => attTraits.includes(x))) return false;
   }
-  return hasAny(b.d.co, def.traits);
+  return hasAny(b.d.co, defTraits);
 }
 /** 적에게 걸린 디버프가 이번 보구 공격에 적용되는지 */
-function defenderBuffApplies(b: Buff, att: Actor, card: string): boolean {
+function defenderBuffApplies(b: Buff, attTraits: number[], card: string): boolean {
   const all = [...(b.d.cs || []), ...(b.d.co || [])];
   const cardIds = all.filter(isCardTrait);
   if (cardIds.length && !cardIds.includes(CARD_TRAIT[card])) return false;
   const other = (b.d.co || []).filter((x) => !isCardTrait(x));
-  return !other.length || other.some((x) => att.cfg.svt.traits.includes(x));
+  return !other.length || other.some((x) => attTraits.includes(x));
 }
 
 interface Mods { card: number; atk: number; power: number; np: number; gain: number; add: number }
-function mods(att: Actor, e: Enemy, card: string): Mods {
+function mods(att: Actor, e: Enemy, card: string, pierceDef = false): Mods {
   const m: Mods = { card: 0, atk: 0, power: 0, np: 0, gain: 0, add: 0 };
   const rates = att.buffs.filter((b) => b.t === 'buffRate');
+  const aT = actorTraits(att), eT = enemyTraits(e);
+  const ignoreDef = pierceDef || att.buffs.some((b) => b.t === 'pierceDefence');
   for (const b of att.buffs) {
-    if (!attackerBuffApplies(b, att, card, e.def)) continue;
+    // 상태 특공: 대상에게 그 상태(버프·디버프)가 걸려 있을 때만
+    if (b.t === 'upDamageIndividualityActiveonly') {
+      if (b.d.co?.length && e.buffs.some((x) => x.d.v?.some((t) => b.d.co!.includes(t)))) m.power += b.val / 1000;
+      continue;
+    }
+    if (!attackerBuffApplies(b, aT, card, eT)) continue;
     const v = b.val / 1000;
     switch (b.t) {
+      case 'upDamageIndividuality': m.power += v; break;
       case 'upCommandall': m.card += v; break;
       case 'downCommandall': m.card -= v; break;
       case 'upAtk': m.atk += v; break;
@@ -154,36 +213,59 @@ function mods(att: Actor, e: Enemy, card: string): Mods {
     }
   }
   for (const b of e.buffs) {
-    if (!defenderBuffApplies(b, att, card)) continue;
+    if (!defenderBuffApplies(b, aT, card)) continue;
     const v = b.val / 1000;
     if (b.t === 'downDefence') m.atk += v;
-    else if (b.t === 'upDefence') m.atk -= v;
+    else if (b.t === 'upDefence') { if (!ignoreDef) m.atk -= v; }
+    else if (b.t === 'downDefenceNpdamage') m.np += v;
+    else if (b.t === 'upDefenceNpdamage') m.np -= v;
+    else if (b.t === 'subSelfdamage') m.add -= b.val;
+    else if (b.t === 'addSelfdamage') m.add += b.val;
     else if (b.t === 'downDefencecommandall') m.card += v;
   }
   return m;
 }
 
-function superEffective(fn: Fn, sv: Sv, e: EnemyDef): number {
+/** 보구의 특공 배율 */
+function superEffective(fn: Fn, sv: Sv, e: Enemy, att: Actor): number {
+  const eT = enemyTraits(e);
+  const corr = (sv.Correction ?? 1000) / 1000;
   switch (fn.t) {
     case 'damageNpIndividual':
-      return sv.Target !== undefined && e.traits.includes(sv.Target) ? (sv.Correction ?? 1000) / 1000 : 1;
-    case 'damageNpIndividualSum':
-      return (sv.Value2 ?? 1000) / 1000; // 중첩 특공은 0중첩으로 가정
+      return sv.Target !== undefined && eT.includes(sv.Target) ? corr : 1;
+    case 'damageNpIndividualSum': {
+      // 중첩 특공: 대상(Target 1) 또는 자신(0)이 가진 해당 특성·상태의 수만큼 배율이 오른다
+      const list = sv.TargetList ?? [];
+      let n = sv.Target === 1 ? countIndiv(eT, e.buffs, list) : countIndiv(actorTraits(att), att.buffs, list);
+      if (n <= 0) return 1;
+      if (sv.ParamAddMaxCount) n = Math.min(n, sv.ParamAddMaxCount);
+      return ((sv.Value2 ?? 1000) + n * (sv.Correction ?? 0)) / 1000;
+    }
+    case 'damageNpStateIndividualFix': // 대상에게 해당 상태가 걸려 있을 때
+      return sv.Target !== undefined && e.buffs.some((b) => b.d.v?.includes(sv.Target!)) ? corr : 1;
+    case 'damageNpRare':
+      return e.def.rarity !== undefined && sv.TargetRarityList?.includes(e.def.rarity) ? corr : 1;
+    case 'damageNpAndOrCheckIndividuality':
+      return sv.AndCheckIndividualityList?.length && sv.AndCheckIndividualityList.every((t) => eT.includes(t)) ? corr : 1;
     default:
-      return 1; // 상태 특공, HP 비례, 레어도 특공 등은 기본 배율만 적용
+      return 1; // HP 비례(피해를 받지 않으므로 기본 배율), 배틀 포인트 등
   }
 }
 
-const CONSUMED = new Set(['upCommandall', 'upAtk', 'upDamage', 'upNpdamage', 'upDropnp', 'addDamage', 'buffRate']);
+const CONSUMED = new Set(['upCommandall', 'upAtk', 'upDamage', 'upNpdamage', 'upDropnp', 'addDamage', 'buffRate', 'upChagetd', 'upDamageIndividuality', 'upDamageIndividualityActiveonly']);
 
-function fireNp(s: State, a: Actor, log?: TurnLog) {
+/** chain: 이번 턴에 앞서 쏜 보구의 수. 보구를 이어 쏘면 뒤의 것일수록 오버차지가 1단계씩 오른다. */
+function fireNp(s: State, a: Actor, log?: TurnLog, chain = 0) {
   const np = a.cfg.svt.np!;
+  // 오버차지: NP 100%마다 1단계(최대 3) + 보구 연계 순서 + 오버차지 UP 버프, 최대 5단계
+  const oc = Math.max(1, Math.min(5, Math.min(3, Math.floor(a.gauge / 10000)) + chain + a.buffs.reduce((n, b) => n + (b.t === 'upChagetd' ? b.val : 0), 0)));
   const entry = { who: a.cfg.svt.name, np: np.name, hits: [] as TurnLog['nps'][0]['hits'], refund: 0 };
   let refund = 0;
   a.gauge = 0;
   a.fired = true;
   const leaving: Actor[] = []; // 이 보구로 퇴장하는 아군
   const pierce = a.buffs.some((b) => b.t === 'pierceInvincible');
+  const sureHit = a.buffs.some((b) => b.t === 'breakAvoidance');
   for (const fn of np.fn) {
     if (fn.t === 'forceInstantDeath') {
       // 자신이 죽거나(아라쉬 등), 선두의 다른 아군 1기를 제물로 쓴다(진궁). 영구수면 상태의 아군은 제물이 될 수 없다.
@@ -191,21 +273,22 @@ function fireNp(s: State, a: Actor, log?: TurnLog) {
       if (victim && !leaving.includes(victim)) leaving.push(victim);
       continue;
     }
-    if (!fn.t.startsWith('damageNp')) { applyFn(s, a, fn, a.cfg.npLv - 1, a); continue; }
-    const sv = svAt(fn, a.cfg.npLv - 1);
+    if (!fn.t.startsWith('damageNp')) { applyFn(s, a, fn, a.cfg.npLv - 1, a, oc); continue; }
+    const sv = svAt(fn, a.cfg.npLv - 1, oc);
+    if (!sv.Value) continue; // 오버차지 단계가 올라야 생기는 추가 공격
     const targets = fn.tg === 'enemyAll' ? s.field.slice() : (() => { const e = pickEnemy(s); return e ? [e] : []; })();
     for (const e of targets) {
-      const m = mods(a, e, np.card);
+      const m = mods(a, e, np.card, fn.t === 'damageNpPierce');
       const svt = a.cfg.svt;
       const classAtk = (s.rel.classAttack[svt.cls] ?? 1000) / 1000;
       const affinity = (s.rel.classRelation[svt.cls]?.[e.def.cls] ?? 1000) / 1000;
       const attr = (s.rel.attribute[svt.attr]?.[e.def.attr] ?? 1000) / 1000;
       // 무적 상태의 적에게는 대미지가 들어가지 않는다(오베론 보구에 맞은 적은 그 턴 동안 무적)
-      const blocked = !pierce && e.buffs.some((b) => b.t === 'invincible');
-      const dmg = blocked ? 0 : Math.floor(
+      const blocked = !pierce && e.buffs.some((b) => b.t === 'invincible' || (b.t === 'avoidance' && !sureHit));
+      const dmg = blocked ? 0 : Math.max(0, Math.floor(
         a.cfg.atk * ((sv.Value ?? 0) / 1000) * CARD_DMG[np.card] * Math.max(0, 1 + m.card) * classAtk * affinity * attr * 0.23 *
-        Math.max(0, 1 + m.atk) * Math.max(0.001, 1 + m.power + m.np) * superEffective(fn, sv, e.def) * s.roll,
-      ) + m.add;
+        Math.max(0, 1 + m.atk) * Math.max(0.001, 1 + m.power + m.np) * superEffective(fn, sv, e, a) * s.roll,
+      ) + m.add);
       // NP 회수: 히트별 계산, 적을 쓰러뜨린 히트부터 오버킬 1.5배
       let hp = e.dead ? 0 : e.bars[0];
       let dealt = 0;
@@ -253,10 +336,11 @@ const dealers = (s: State) => s.actors.filter((a) => a.cfg.role === 'dealer' && 
 /** 준비된 딜러의 보구를 차례로 발동한다. 필드가 비면 남은 보구는 아낀다. */
 function npPhase(s: State, log?: TurnLog) {
   const order = dealers(s).sort((x, y) => Number(blocksLater(x)) - Number(blocksLater(y)));
+  let chain = 0;
   for (const a of order) {
     // 앞선 보구의 제물이 되어 이미 퇴장했을 수 있다
     if (!s.actors.includes(a) || a.gauge < 10000 || !alive(s).length) continue;
-    fireNp(s, a, log);
+    fireNp(s, a, log, chain++);
   }
 }
 function wouldClear(s: State): boolean {
@@ -279,8 +363,11 @@ function chargeFor(r: SkillRef, target: Actor): number {
   }
   return sum;
 }
-const hasBuff = (r: SkillRef) => skillFns(r).some((f) => f.b || f.t === 'shortenSkill');
-const hasCharge = (r: SkillRef) => skillFns(r).some((f) => f.t === 'gainNp');
+const BUFFLIKE = new Set(['shortenSkill', 'addFieldChangeToField']);
+const hasBuff = (r: SkillRef) => skillFns(r).some((f) => f.b || BUFFLIKE.has(f.t));
+const CHARGE = new Set(['gainNp', 'gainNpBuffIndividualSum', 'gainNpIndividualSum', 'gainNpTargetSum', 'gainMultiplyNp', 'absorbNp']);
+const shortens = (r: SkillRef) => skillFns(r).some((f) => f.t === 'shortenSkill');
+const hasCharge = (r: SkillRef) => skillFns(r).some((f) => CHARGE.has(f.t));
 
 function available(s: State): SkillRef[] {
   const out: SkillRef[] = [];
@@ -301,6 +388,9 @@ function useSkill(s: State, r: SkillRef, target: Actor, log?: TurnLog) {
   const lv = skillLvOf(r);
   for (const fn of sk.fn) applyFn(s, r.a, fn, lv - 1, target);
   r.a.cd[r.i] = sk.cd[Math.min(lv, sk.cd.length) - 1];
+  // 어펜드 스킬 5(스킬 재장전): 스킬마다 처음 쓸 때 쿨타임 1 감소
+  if (r.a.reload > 0 && !r.a.reloaded[r.i]) { r.a.cd[r.i] = Math.max(0, r.a.cd[r.i] - 1); r.a.reload--; r.a.reloaded[r.i] = true; }
+  s.used++;
   const needsTarget = sk.fn.some((f) => f.tg === 'ptOne');
   log?.skills.push({ who: r.a.cfg.svt.name, skill: sk.name, target: needsTarget ? target.cfg.svt.name : undefined });
 }
@@ -363,20 +453,28 @@ function playTurn(s: State, mode: 'lazy' | 'eager', log: TurnLog) {
   if (!ds.length) return;
   const main = ds.find((d) => reachable(s, d));
   const order = (list: SkillRef[], d: Actor) =>
-    list.filter((r) => finOk(s, r, d)).sort((x, y) => Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
+    // 쿨타임 단축 스킬은 다른 스킬을 쓴 뒤에 써야 효과가 있으므로 맨 뒤로 보낸다
+    list.filter((r) => finOk(s, r, d)).sort((x, y) => Number(shortens(x)) - Number(shortens(y)) || Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
   if (mode === 'eager' && main) {
-    for (const r of order(available(s).filter((r) => hasBuff(r) && !hasCharge(r)), main)) useSkill(s, r, main, log);
+    for (const r of order(available(s).filter((r) => hasBuff(r) && !hasCharge(r) && !shortens(r)), main)) useSkill(s, r, main, log);
   }
-  for (const d of ds) {
-    if (wouldClear(s)) break;
-    ensureCharge(s, d, log);
-  }
-  const ready = ds.find((d) => d.gauge >= 10000);
-  if (ready) {
-    for (const r of order(available(s).filter(hasBuff), ready)) {
+  // 쿨타임 단축으로 같은 턴에 다시 쓸 수 있게 된 스킬이 있으면 한 번 더 돈다
+  for (let pass = 0; pass < 3; pass++) {
+    const before = s.used;
+    for (const d of ds) {
       if (wouldClear(s)) break;
-      useSkill(s, r, ready, log);
+      ensureCharge(s, d, log);
     }
+    const ready = ds.find((d) => d.gauge >= 10000);
+    if (ready) {
+      for (const r of order(available(s).filter(hasBuff), ready)) {
+        if (wouldClear(s)) break;
+        // 쿨타임 단축은 줄일 쿨타임이 있을 때만 쓴다
+        if (shortens(r) && !skillFns(r).some((f) => f.b || f.t !== 'shortenSkill') && !ready.cd.some((c) => c > 0) && !s.actors.some((a) => a !== ready && a.cd.some((c) => c > 0))) continue;
+        useSkill(s, r, ready, log);
+      }
+    }
+    if (s.used === before) break;
   }
   npPhase(s, log);
 }
@@ -406,6 +504,8 @@ function endTurn(s: State): boolean {
     a.cd = a.cd.map((c) => Math.max(0, c - 1));
   }
   for (const a of s.bench) a.cd = a.cd.map((c) => Math.max(0, c - 1));
+  for (const f of s.fieldAdd) if (f.turn > 0) f.turn--;
+  s.fieldAdd = s.fieldAdd.filter((f) => f.turn !== 0);
   s.field = s.field.filter((e) => !e.dead);
   for (const e of s.field) {
     for (const b of e.buffs) if (b.turn > 0) b.turn--;
@@ -423,12 +523,12 @@ function endTurn(s: State): boolean {
 
 function masterActor(skills: Skill[]): Actor {
   const svt = { id: 0, no: 0, name: '마스터', cls: '', rarity: 0, cost: 0, attr: '', traits: [], atk: { 1: 0, max: 0, 100: 0, 120: 0 }, skills, np: null, passive: [], face: '' } as Servant;
-  return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false };
+  return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false, reload: 0, reloaded: [] };
 }
 
 // 선쿨타임이 있는 스킬은 그만큼 기다려야 쓸 수 있다
 const mkActor = (cfg: ActorCfg): Actor => ({
-  cfg, gauge: cfg.startNp, buffs: [], fired: false,
+  cfg, gauge: cfg.startNp, buffs: [], fired: false, reload: cfg.reload ?? 0, reloaded: [],
   cd: cfg.svt.skills.map((sk, i) => { const lv = cfg.skillLvs?.[i] ?? cfg.skillLv; return sk.init?.[Math.min(lv, sk.init.length) - 1] ?? 0; }),
 });
 
@@ -438,7 +538,7 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
     actors: front.filter((c) => !c.bench).map(mkActor),
     bench: front.filter((c) => c.bench).map(mkActor),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
-    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0,
+    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0,
   };
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   const total = quest.waves.reduce((n, w) => n + w.length, 0);
