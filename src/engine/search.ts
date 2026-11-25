@@ -118,8 +118,18 @@ export function search(
       for (const lu of samples) { const r = run(lu, m); score += r.cleared ? 100000 - r.turns * 1000 : r.broken * 100 + dmgOf(r) / 1e6; }
       if (score > bestScore) { bestScore = score; best = m; }
     }
-    mcList = best ? [null, best] : [null];
+    // NP가 조금 모자라 못 쏘는 편성이 많으므로 NP 충전 예장도 후보에 둔다:
+    // 충전량이 가장 큰 예장과, 충전에 더해 대미지 버프가 가장 좋은 예장
+    const lastSv = (f: { sv: unknown }) => { const v = f.sv as { Value?: number } | { Value?: number }[]; return (Array.isArray(v) ? v[v.length - 1] : v).Value ?? 0; };
+    const chargeOf = (m: MysticCode) => m.skills.reduce((n, k) => n + k.fn.reduce((x, f) => x + (f.t === 'gainNp' ? lastSv(f) : 0), 0), 0);
+    const buffOf = (m: MysticCode) => m.skills.reduce((n, k) => n + k.fn.reduce((x, f) => x + (f.b?.some((b) => ['upNpdamage', 'upAtk', 'upCommandall'].includes(b.t)) ? lastSv(f) * (f.tg === 'ptAll' ? 1.5 : 1) : 0), 0), 0);
+    const chargers = st.mcAuto.filter((m) => chargeOf(m) >= 1000);
+    const bigCharge = chargers.slice().sort((a, b) => chargeOf(b) - chargeOf(a) || buffOf(b) - buffOf(a))[0] ?? null;
+    const buffCharge = chargers.slice().sort((a, b) => buffOf(b) - buffOf(a) || chargeOf(b) - chargeOf(a))[0] ?? null;
+    mcList = [null, ...new Set([best, bigCharge, buffCharge].filter((m): m is MysticCode => !!m))];
   }
+  // 후보 예장의 스킬을 모두 가진 가상의 예장: '어느 예장으로도 안 된다'를 한 번에 가려내는 데 쓴다
+  const superMc: MysticCode = { id: -1, name: '', skills: mcList.filter((m): m is MysticCode => !!m).flatMap((m) => m.skills) };
   // 오더 체인지: 체크했을 때만, 오더 체인지가 있는 예장으로만
   const ocMc = !st.orderChange ? null
     : st.mcAuto?.length ? (st.mcAuto.find((m) => m.id === 210 && hasOc(m)) ?? st.mcAuto.find(hasOc) ?? null)
@@ -137,6 +147,8 @@ export function search(
     bench?: boolean; swapOut?: boolean; boost?: boolean;
     /** 프렌드 전용 자리(같은 딜러를 빌리는 경우) */
     friendOnly?: boolean;
+    /** 보구도 쏘는 서포터(앞 웨이브 담당). 딜러 역할이지만 프렌드여도 된다. */
+    sub?: boolean;
   }
   /** 어느 자리를 프렌드로 채울지(-1 = 프렌드 없이 전부 내 서번트). 내 서번트끼리는 겹칠 수 없다. */
   const assignments = (slots: Slot[]): number[] => {
@@ -144,7 +156,7 @@ export function search(
     const fixed = slots.findIndex((s) => s.friendOnly);
     for (let f = -1; f < slots.length; f++) {
       if (fixed >= 0 && f !== fixed) continue;
-      if (f >= 0 && (slots[f].boost || (slots[f].role === 'dealer' && !slots[f].friendOnly))) continue;
+      if (f >= 0 && (slots[f].boost || (slots[f].role === 'dealer' && !slots[f].friendOnly && !slots[f].sub))) continue;
       const own = slots.filter((_, i) => i !== f).map((s) => s.no);
       if (own.some((n) => !byNo.has(n)) || new Set(own).size !== own.length) continue;
       if (f >= 0 && !allowDup && own.includes(slots[f].no)) continue;
@@ -164,26 +176,27 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     const attempt = (f0: number): { sim: SimResult; mc: MysticCode | null; atk: boolean } | null => {
       const mk = (plus: number): ActorCfg[] => slots.map((s, i) => ({
         ...(i === f0 ? friendCfg(allByNo.get(s.no)!, s.role) : cfg(byNo.get(s.no)!, s.role, s.boost ? plus : 0)),
-        bench: s.bench, swapOut: s.swapOut,
+        bench: s.bench, swapOut: s.swapOut, main: s.boost,
       }));
-      // 가장 가벼운 조건부터: 첫 예장(보통 없음)·예장 ATK 없음
-      let sim = run(mk(0), mcs[0]);
-      let mc = mcs[0], atk = false;
-      if (!sim.cleared) {
-        // 가장 강한 조건(마지막 예장 + 예장 ATK)으로도 안 되면 포기
-        const strong = mcs[mcs.length - 1];
-        if (mcs.length === 1 && !plusAtk) { noteFail(mk(0).map((x) => x.svt.name), sim); return null; }
-        const top = run(mk(plusAtk), strong);
-        if (!top.cleared) { noteFail(mk(0).map((x) => x.svt.name), top.broken > sim.broken ? top : sim); return null; }
-        sim = top; mc = strong; atk = plusAtk > 0;
-        // 되는 것을 확인했으니 조건을 덜어 본다: 예장 ATK 없이 → 마술예장 없이
-        if (plusAtk && mcs.length > 1) {
-          const a = run(mk(0), strong);
-          if (a.cleared) { sim = a; atk = false; }
-          else { const b = run(mk(plusAtk), mcs[0]); if (b.cleared) { sim = b; mc = mcs[0]; } }
-        }
+      // 대부분의 편성은 실패한다. 그래서 가장 유리한 조건(예장 ATK + 후보 예장의 스킬을 전부 가진 가상의 예장)부터
+      // 계산해, 그걸로도 안 되면 한 번에 포기한다.
+      if (mcs.length > 1 || plusAtk) {
+        const top = run(mk(plusAtk), mcs.length > 2 ? superMc : mcs[mcs.length - 1]);
+        if (!top.cleared) { noteFail(mk(0).map((x) => x.svt.name), top); return null; }
       }
-      return { sim, mc, atk };
+      // 되는 편성이면 가장 가벼운 조건부터 찾는다: 첫 예장(보통 없음)·예장 ATK 없음
+      const first = run(mk(0), mcs[0]);
+      if (first.cleared) return { sim: first, mc: mcs[0], atk: false };
+      if (mcs.length === 1 && !plusAtk) { noteFail(mk(0).map((x) => x.svt.name), first); return null; }
+      // 되는 것을 확인했으니 실제 조건을 찾는다: 마술예장만 → 예장 ATK만 → 둘 다
+      for (const m of mcs.slice(1)) { const r = run(mk(0), m); if (r.cleared) return { sim: r, mc: m, atk: false }; }
+      if (plusAtk) {
+        const r0 = run(mk(plusAtk), mcs[0]);
+        if (r0.cleared) return { sim: r0, mc: mcs[0], atk: true };
+        for (const m of mcs.slice(1)) { const r = run(mk(plusAtk), m); if (r.cleared) return { sim: r, mc: m, atk: true }; }
+      }
+      noteFail(mk(0).map((x) => x.svt.name), first);
+      return null;
     };
     const push = (f: number, r: { sim: SimResult; mc: MysticCode | null; atk: boolean }) => {
       const own = slots.filter((_, i) => i !== f);
@@ -221,7 +234,11 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
       done++;
       if (soloOk || combo.includes(d.svt.no)) continue;
       if (combo.some((n) => okSingles.has(n))) continue; // 더 작은 조합으로 이미 클리어 가능
-      const got = tryLineup([deal(d, { boost: true }), ...combo.map((n) => sup(n))], mcList);
+      let got = tryLineup([deal(d, { boost: true }), ...combo.map((n) => sup(n))], mcList);
+      // 안 되면 서포터도 보구를 쏘는 운용: 서포터가 앞 웨이브를 맡고 딜러는 마지막 웨이브에 집중한다
+      if (!got && quest.waves.length > 1 && combo.some((n) => allByNo.get(n)?.np?.dmg)) {
+        got = tryLineup([deal(d, { boost: true }), ...combo.map((n): Slot => (allByNo.get(n)?.np?.dmg ? { no: n, role: 'dealer', sub: true } : sup(n)))], mcList);
+      }
       if (got) {
         if (got === 1) plain++;
         if (combo.length === 0) soloOk = true;
@@ -313,7 +330,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
       : '클리어되는 조합은 있지만, 필수 포함 서번트를 모두 넣으면 자리(내 서번트 5기)나 코스트가 모자랍니다.';
   }
   if (st.orderChange && !ocMc) note = [note, '오더 체인지를 켰지만 고른 마술예장에 오더 체인지가 없어 쓰지 않았습니다. 마술예장을 자동 선택으로 두거나 전투복·결전용 제복을 고르세요.'].filter(Boolean).join(' ');
-  return { results, simulated, feasible, bestFail: feasible ? null : bestFail, note, autoMc: st.mcAuto?.length ? (mcList[1]?.name ?? null) : undefined };
+  return { results, simulated, feasible, bestFail: feasible ? null : bestFail, note, autoMc: st.mcAuto?.length ? (mcList.slice(1).map((m) => m!.name.replace(/^마술예장 /, '')).join(', ') || null) : undefined };
 }
 
 // ---------------------------------------------------------------- 인연 포인트 최적화

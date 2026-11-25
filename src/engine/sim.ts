@@ -30,6 +30,12 @@ interface State {
   fieldAdd: { trait: number; turn: number }[];
   /** 이번 계산에서 쓴 스킬 수(같은 턴에 쿨타임이 풀린 스킬을 다시 쓰는지 판단) */
   used: number;
+  /** 이번 웨이브를 맡고 나면 더 쓸 일이 없는 딜러. 행동 불능이 되는 스킬(꿈의 끝)을 써도 된다. */
+  expend: Actor | null;
+  /** 웨이브 분담 중 주 딜러가 아닌 딜러의 차례를 준비하고 있는가 */
+  expendPhase?: boolean;
+  /** 필드 특성을 주는 버프가 한 번이라도 걸렸는가 */
+  fieldBuff?: boolean;
 }
 
 export interface SimExtra {
@@ -38,7 +44,8 @@ export interface SimExtra {
   /** 보구를 쓰지 않은 턴에 평타로 얻는다고 가정하는 NP (10000 = 100%) */
   cardNp?: number;
 }
-export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: 'lazy' | 'eager' }
+export type SimMode = 'lazy' | 'eager' | 'relay';
+export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: SimMode }
 
 const pickLv = (sv: Sv | Sv[], idx: number): Sv => (Array.isArray(sv) ? sv[Math.min(idx, sv.length - 1)] : sv);
 /** 레벨(스킬·보구)과 오버차지 단계에 맞는 수치 */
@@ -48,6 +55,8 @@ const withAdded = (base: number[], buffs: Buff[]) => (buffs.some((b) => b.t === 
 const actorTraits = (a: Actor) => withAdded(a.cfg.svt.traits, a.buffs);
 const enemyTraits = (e: Enemy) => withAdded(e.def.traits, e.buffs);
 function fieldTraits(s: State): number[] {
+  // 대부분의 전투는 필드가 바뀌지 않는다: 그때는 목록을 새로 만들지 않는다
+  if (!s.fieldAdd.length && !s.fieldBuff) return s.quest.fieldTraits;
   const out = s.quest.fieldTraits.slice();
   for (const f of s.fieldAdd) out.push(f.trait);
   for (const a of s.actors) for (const b of a.buffs) if (b.t === 'fieldIndividuality') out.push(b.val);
@@ -67,6 +76,7 @@ function cloneState(s: State): State {
     bench: s.bench.map(cloneActor),
     master: s.master && { ...s.master, cd: s.master.cd.slice(), buffs: [] },
     fieldAdd: s.fieldAdd.map((f) => ({ ...f })),
+    expend: null,
     field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, summoned: e.summoned, buffs: e.buffs.map((b) => ({ ...b })) })),
     reserve: s.reserve.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: [] })),
   };
@@ -150,6 +160,7 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
   else if (fn.b) {
     for (const d of fn.b) {
       const mk = (): Buff => ({ t: d.t, val: v, turn: sv.Turn ?? -1, count: sv.Count ?? -1, d });
+      if (d.t === 'fieldIndividuality') s.fieldBuff = true;
       // 특성 조건이 붙은 버프는 보유자나 필드가 그 특성을 가질 때만 건다
       const ok = (a: Actor) => !d.si?.length || d.si.some((t) => actorTraits(a).includes(t) || field.includes(t));
       for (const a of allies) if (ok(a)) a.buffs.push(mk());
@@ -371,7 +382,8 @@ const hasCharge = (r: SkillRef) => skillFns(r).some((f) => CHARGE.has(f.t));
 
 function available(s: State): SkillRef[] {
   const out: SkillRef[] = [];
-  for (const a of s.master ? [...s.actors, s.master] : s.actors) {
+  // 앞 웨이브를 다른 딜러에게 맡길 때는 마술예장 스킬을 아껴 둔다(주 딜러의 마지막 웨이브에 쓴다)
+  for (const a of s.master && !s.expendPhase ? [...s.actors, s.master] : s.actors) {
     if (a.disabled) continue;
     a.cfg.svt.skills.forEach((sk, i) => {
       if (a.cd[i] !== 0) return;
@@ -423,7 +435,7 @@ function reachable(s: State, d: Actor): boolean {
  */
 function finOk(s: State, r: SkillRef, target: Actor): boolean {
   if (!r.a.cfg.svt.skills[r.i].fin) return true;
-  return s.wave >= s.quest.waves.length - 1 || target.cfg.svt.np?.dies === 'self';
+  return s.wave >= s.quest.waves.length - 1 || target.cfg.svt.np?.dies === 'self' || s.expend === target;
 }
 
 /**
@@ -447,9 +459,65 @@ function orderChange(s: State, log: TurnLog) {
   (log.events ??= []).push(`오더 체인지: ${out.cfg.svt.name}의 스킬을 쓴 뒤 ${next.cfg.svt.name}와(과) 교체`);
 }
 
-function playTurn(s: State, mode: 'lazy' | 'eager', log: TurnLog) {
+/** 스킬이 대상 c에게 쓸모가 있는가: 남의 자기 전용 스킬은 c에게 아무 효과가 없다 */
+const helps = (r: SkillRef, c: Actor) => r.a === c || skillFns(r).some((f) => f.tg !== 'self');
+
+/** c 혼자 보구를 쏴서 지금 필드를 비울 수 있는가 */
+function clearsAlone(s: State, i: number): boolean {
+  const c = cloneState(s);
+  if (c.actors[i].gauge < 10000) return false;
+  fireNp(c, c.actors[i]);
+  return !alive(c).length;
+}
+/** i번 딜러 혼자 이번 웨이브를 정리하도록 NP를 채우고, 모자라면 버프를 하나씩 건다. 성공 여부를 돌려준다. */
+function prepareSolo(s: State, i: number, expendable: boolean, log?: TurnLog): boolean {
+  const c = s.actors[i];
+  s.expend = expendable ? c : null;
+  s.expendPhase = true;
+  if (!ensureCharge(s, c, log)) { s.expend = null; s.expendPhase = false; return false; }
+  for (let pass = 0; pass < 2 && !clearsAlone(s, i); pass++) {
+    // 행동 불능을 부르는 스킬은 맨 마지막에, NP 충전이 딸린 버프는 그 앞에 쓴다(충전은 뒤 웨이브에도 쓸모가 있다)
+    const list = available(s).filter((r) => hasBuff(r) && helps(r, c) && finOk(s, r, c))
+      .sort((x, y) => Number(!!x.a.cfg.svt.skills[x.i].fin) - Number(!!y.a.cfg.svt.skills[y.i].fin) || Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === c) - Number(x.a === c));
+    for (const r of list) { if (clearsAlone(s, i)) break; useSkill(s, r, c, log); }
+  }
+  const ok = clearsAlone(s, i);
+  s.expend = null;
+  s.expendPhase = false;
+  return ok;
+}
+/**
+ * 웨이브 분담: 마지막 웨이브가 아니면 주 딜러를 아끼고, 다른 딜러 중 스킬을 가장 적게 쓰고 정리할 수 있는 쪽이 보구를 쏜다.
+ * 누구도 혼자 정리하지 못하면 false를 돌려주고 평소 운용으로 넘어간다.
+ */
+function playRelay(s: State, log: TurnLog): boolean {
+  const lastWave = s.quest.waves.length - 1;
+  const main = s.actors.find((a) => a.cfg.main && !a.disabled);
+  if (!main || s.wave >= lastWave) return false;
+  // 다음이 마지막 웨이브면 이번에 쏘는 딜러는 더 쓸 일이 없다
+  const expendable = s.wave === lastWave - 1;
+  let best = -1, bestCost = Infinity;
+  for (const d of dealers(s)) {
+    if (d === main) continue;
+    const i = s.actors.indexOf(d);
+    const c = cloneState(s);
+    if (!prepareSolo(c, i, expendable)) continue;
+    const cost = c.used - s.used;
+    if (cost < bestCost) { bestCost = cost; best = i; }
+  }
+  if (best < 0) return false;
+  prepareSolo(s, best, expendable, log);
+  fireNp(s, s.actors[best], log);
+  return true;
+}
+
+function playTurn(s: State, mode: SimMode, log: TurnLog) {
   orderChange(s, log);
-  const ds = dealers(s);
+  if (mode === 'relay') {
+    if (playRelay(s, log)) return;
+    mode = 'eager'; // 마지막 웨이브(또는 분담 실패)는 버프를 몰아 쓴다
+  }
+  const ds = dealers(s).sort((x, y) => Number(!!y.cfg.main) - Number(!!x.cfg.main));
   if (!ds.length) return;
   const main = ds.find((d) => reachable(s, d));
   const order = (list: SkillRef[], d: Actor) =>
@@ -538,7 +606,7 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
     actors: front.filter((c) => !c.bench).map(mkActor),
     bench: front.filter((c) => c.bench).map(mkActor),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
-    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0,
+    master: opt.mc?.length ? masterActor(opt.mc) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0, expend: null,
   };
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   const total = quest.waves.reduce((n, w) => n + w.length, 0);
@@ -560,7 +628,11 @@ export function simulateBest(front: ActorCfg[], quest: QuestData, rel: Rel, maxT
   const a = simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'lazy' });
   if (a.cleared && a.turns <= quest.waves.length) return a;
   const b = simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'eager' });
-  if (a.cleared !== b.cleared) return a.cleared ? a : b;
-  if (a.cleared) return b.turns < a.turns ? b : a;
-  return b.broken > a.broken ? b : a;
+  const better = (x: SimResult, y: SimResult) => (x.cleared !== y.cleared ? (x.cleared ? x : y) : x.cleared ? (y.turns < x.turns ? y : x) : y.broken > x.broken ? y : x);
+  let best = better(a, b);
+  // 웨이브 분담: 주 딜러가 정해져 있고 보구를 쏠 수 있는 서번트가 둘 이상이며 웨이브가 여럿일 때
+  if (!(best.cleared && best.turns <= quest.waves.length) && quest.waves.length > 1 && front.some((f) => f.main) && front.filter((f) => f.role === 'dealer').length > 1) {
+    best = better(best, simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'relay' }));
+  }
+  return best;
 }
