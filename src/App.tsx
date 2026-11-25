@@ -166,7 +166,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     const [fNo, fMlb] = prefs.friendCe.split(':');
     const settings: Settings = {
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0, reload: prefs.append5 ? 3 : 0,
-      friendCe: fNo ? { no: Number(fNo), mlb: fMlb === '1' } : null, topN: 10, teapot: prefs.teapot,
+      // 프렌드 예장 칸은 하나: 인연 예장이거나, 시작 NP 예장(np:수치)이거나
+      friendCe: fNo && fNo !== 'np' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
       mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
     };
@@ -258,6 +259,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
                 <option key={c.no} value={`${c.no}:1`}>{c.name} (최대해방 {(c.sup ?? c.val)[1] / 10}%)</option>
               ))}
               <option value={`${data.ces.find((c) => c.kind === 'flat')?.no}:1`}>영령초상 (+50)</option>
+              <option value="np:5000">시작 NP 50% 예장 (인연 효과 없음)</option>
+              <option value="np:8000">시작 NP 80% 예장 (인연 효과 없음)</option>
+              <option value="np:10000">시작 NP 100% 예장 — 칼레이도스코프 최대해방 (인연 효과 없음)</option>
             </select>
           </label>
           <label>포우 ATK 강화
@@ -324,6 +328,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               <p className="small">
                 이 계산기는 보구만 계산하고 시작 NP를 주는 예장을 끼지 않는다고 봅니다. 실제로는 평타로 마무리되는 전투도 여기서는 실패로 나옵니다. 시도해 볼 것:
                 {prefs.mc === 0 && ' 마술예장을 자동 선택으로 ·'}
+                {!prefs.friendCe.startsWith('np:') && ' 프렌드 예장을 시작 NP 예장으로(프렌드가 칼레이도스코프를 낀 경우) ·'}
                 {!prefs.oc && ' 오더 체인지 켜기 ·'}
                 {' '}턴 제한 늘리기 · 대미지 난수를 평균으로 · 평타 NP 가정 올리기
                 {prefs.poolMode === 'owned' && ' · 서번트 풀을 전체로 바꿔 가능한 편성 확인'}

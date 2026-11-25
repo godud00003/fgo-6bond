@@ -13,6 +13,8 @@ export interface CEStock { ce: BondCE; count: number; mlb: boolean; /** 보유�
 export interface Settings {
   maxTurns: number; costCap: number; roll: number; startNp: number;
   friendCe: { no: number; mlb: boolean } | null; topN: number;
+  /** 프렌드가 인연 예장 대신 시작 NP 예장을 낀 경우의 추가 시작 NP (10000 = 100%). friendCe와 함께 쓸 수 없다. */
+  friendStartNp?: number;
   /** 찻주전자 배수(1 = 미사용). 최종 인연 포인트에 곱해진다. */
   teapot: number;
   /** 어펜드 스킬 5(스킬 재장전)의 기본 횟수: 등록하지 않은 서번트와 프렌드에 적용(0~3) */
@@ -77,7 +79,7 @@ export function search(
   const cfg = (p: PoolEntry, role: 'dealer' | 'support', plusAtk = 0): ActorCfg =>
     ({ svt: p.svt, npLv: p.npLv, skillLv: p.skillLv, skillLvs: p.skillLvs, atk: p.atk + plusAtk, startNp: p.startNp ?? st.startNp, reload: p.reload ?? st.reload ?? 0, role });
   const friendCfg = (s: Servant, role: 'dealer' | 'support' = 'support'): ActorCfg =>
-    ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp, reload: st.reload ?? 0, role, friend: true });
+    ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: st.startNp + (st.friendStartNp ?? 0), reload: st.reload ?? 0, role, friend: true });
   // 예장 ATK: 보유한 인연 예장 중 ATK가 가장 높은 것을 주 딜러에게 끼운다고 본다.
   // 예장 없이도 클리어되는 편성은 그대로 두고, 안 되는 편성만 이 예장을 낀 조건으로 다시 계산한다.
   const ceAtkOf = (s: CEStock) => s.atk ?? s.ce.atk;
@@ -155,43 +157,56 @@ export function search(
    * 반환: 0 = 실패, 1 = 예장 ATK 없이 클리어, 2 = 예장 ATK를 더해야 클리어.
    * 전투 결과는 누가 프렌드든 같다고 보고(프렌드는 풀스펙 가정) 내 서번트가 가장 많은 배치로 한 번만 계산한다.
    */
-  const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
+const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     const as = assignments(slots);
     if (!as.length) return 0;
-    const f0 = as[0];
-    const mk = (plus: number): ActorCfg[] => slots.map((s, i) => ({
-      ...(i === f0 ? friendCfg(allByNo.get(s.no)!, s.role) : cfg(byNo.get(s.no)!, s.role, s.boost ? plus : 0)),
-      bench: s.bench, swapOut: s.swapOut,
-    }));
-    // 가장 가벼운 조건부터: 첫 예장(보통 없음)·예장 ATK 없음
-    let sim = run(mk(0), mcs[0]);
-    let mc = mcs[0], atk = false;
-    if (!sim.cleared) {
-      // 가장 강한 조건(마지막 예장 + 예장 ATK)으로도 안 되면 포기
-      const strong = mcs[mcs.length - 1];
-      if (mcs.length === 1 && !plusAtk) { noteFail(mk(0).map((x) => x.svt.name), sim); return 0; }
-      const top = run(mk(plusAtk), strong);
-      if (!top.cleared) { noteFail(mk(0).map((x) => x.svt.name), top.broken > sim.broken ? top : sim); return 0; }
-      sim = top; mc = strong; atk = plusAtk > 0;
-      // 되는 것을 확인했으니 조건을 덜어 본다: 예장 ATK 없이 → 마술예장 없이
-      if (plusAtk && mcs.length > 1) {
-        const a = run(mk(0), strong);
-        if (a.cleared) { sim = a; atk = false; }
-        else { const b = run(mk(plusAtk), mcs[0]); if (b.cleared) { sim = b; mc = mcs[0]; } }
+    /** 프렌드 자리를 f0로 놓고 계산한다. 클리어되면 조건(마술예장·예장 ATK)을 가장 덜어 낸 결과를 돌려준다. */
+    const attempt = (f0: number): { sim: SimResult; mc: MysticCode | null; atk: boolean } | null => {
+      const mk = (plus: number): ActorCfg[] => slots.map((s, i) => ({
+        ...(i === f0 ? friendCfg(allByNo.get(s.no)!, s.role) : cfg(byNo.get(s.no)!, s.role, s.boost ? plus : 0)),
+        bench: s.bench, swapOut: s.swapOut,
+      }));
+      // 가장 가벼운 조건부터: 첫 예장(보통 없음)·예장 ATK 없음
+      let sim = run(mk(0), mcs[0]);
+      let mc = mcs[0], atk = false;
+      if (!sim.cleared) {
+        // 가장 강한 조건(마지막 예장 + 예장 ATK)으로도 안 되면 포기
+        const strong = mcs[mcs.length - 1];
+        if (mcs.length === 1 && !plusAtk) { noteFail(mk(0).map((x) => x.svt.name), sim); return null; }
+        const top = run(mk(plusAtk), strong);
+        if (!top.cleared) { noteFail(mk(0).map((x) => x.svt.name), top.broken > sim.broken ? top : sim); return null; }
+        sim = top; mc = strong; atk = plusAtk > 0;
+        // 되는 것을 확인했으니 조건을 덜어 본다: 예장 ATK 없이 → 마술예장 없이
+        if (plusAtk && mcs.length > 1) {
+          const a = run(mk(0), strong);
+          if (a.cleared) { sim = a; atk = false; }
+          else { const b = run(mk(plusAtk), mcs[0]); if (b.cleared) { sim = b; mc = mcs[0]; } }
+        }
       }
-    }
-    for (const f of as) {
+      return { sim, mc, atk };
+    };
+    const push = (f: number, r: { sim: SimResult; mc: MysticCode | null; atk: boolean }) => {
       const own = slots.filter((_, i) => i !== f);
       const roles = new Map<number, 'dealer' | 'support'>(own.map((s) => [s.no, s.role]));
-      (atk ? coresAtk : cores).push({
+      (r.atk ? coresAtk : cores).push({
         own: own.map((s) => byNo.get(s.no)!), friend: f >= 0 ? allByNo.get(slots[f].no)! : null,
-        friendRole: f >= 0 ? slots[f].role : undefined, roles, sim, mc,
+        friendRole: f >= 0 ? slots[f].role : undefined, roles, sim: r.sim, mc: r.mc,
         bench: new Set(own.filter((s) => s.bench).map((s) => s.no)), friendBench: f >= 0 && !!slots[f].bench,
         swapOut: slots.find((s) => s.swapOut)?.no,
         seq: slots.map((s, i) => ({ s, i })).filter((x) => !x.s.bench).map((x) => (x.i === f ? 'f' : String(x.s.no))),
       });
+    };
+    // 프렌드가 내 서번트와 조건이 다르면(시작 NP 예장) 프렌드 자리마다 따로 계산한다.
+    // 그렇지 않으면 전투 결과는 누가 프렌드든 같다고 보고 내 서번트가 가장 많은 배치로 한 번만 계산한다.
+    if (st.friendStartNp) {
+      let best = 0;
+      for (const f of as) { const r = attempt(f); if (r) { push(f, r); best = best === 1 ? 1 : r.atk ? 2 : 1; } }
+      return best;
     }
-    return atk ? 2 : 1;
+    const r = attempt(as[0]);
+    if (!r) return 0;
+    for (const f of as) push(f, r);
+    return r.atk ? 2 : 1;
   };
   const sup = (no: number, o: Partial<Slot> = {}): Slot => ({ no, role: 'support', ...o });
   const deal = (d: PoolEntry, o: Partial<Slot> = {}): Slot => ({ no: d.svt.no, role: 'dealer', ...o });
