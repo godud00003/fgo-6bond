@@ -10,6 +10,8 @@ export interface RosterEntry {
   skills?: number[];
   /** 어펜드 스킬 2로 얻는 시작 NP (10000 = 100%). 없으면 조건 탭의 설정을 따른다. */
   startNp?: number;
+  /** 편성 화면에 보이는 영기재림 단계(0~4). 단계별로 특성이 다른 서번트의 판정에 쓴다. */
+  asc?: number;
   /** 표시용: 실제 레벨, 인연 레벨 */
   level?: number; bond?: number;
 }
@@ -25,7 +27,7 @@ export interface LoginImport {
 const APPEND2 = [10, 11, 12, 13, 14, 15, 16, 17, 18, 20];
 
 interface UserSvt {
-  id: number; svtId: number; lv: number; atk: number; limitCount: number;
+  id: number; svtId: number; lv: number; atk: number; limitCount: number; dispLimitCount?: number;
   skillLv1: number; skillLv2: number; skillLv3: number; treasureDeviceLv1: number;
 }
 
@@ -78,6 +80,7 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
       lv: u.lv >= 120 ? '120' : u.lv >= 100 ? '100' : 'max',
       skillLv: Math.min(u.skillLv1, u.skillLv2, u.skillLv3), skills: [u.skillLv1, u.skillLv2, u.skillLv3],
       atk: u.atk, level: u.lv, bond,
+      asc: u.dispLimitCount !== undefined && u.dispLimitCount >= 0 && u.dispLimitCount <= 4 ? u.dispLimitCount : undefined,
       startNp: appendLv > 0 ? APPEND2[Math.min(appendLv, 10) - 1] * 100 : 0,
       bondMax: bond >= bondCap, bond15: bond >= 15,
     };

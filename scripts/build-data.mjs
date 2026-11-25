@@ -81,14 +81,23 @@ function compactFn(f, levels) {
 // 기본 특성 + 나중에 추가된 상시 특성(traitAdd). 이벤트 한정·특정 재림 한정 특성은 뺀다.
 // 예: 어둠의 코얀스카야의 [짐승과의 서번트](2821)는 traitAdd에만 들어 있다.
 const buildSec = Date.now() / 1000;
-function allTraits(s) {
-  const out = new Set(ids(s.traits));
+// 영기재림 단계에 따라 특성이 달라지는 서번트가 있다(예: 로우히는 3·4단계에서만 [짐승과의 서번트]).
+// stage가 주어지면 그 단계의 특성 목록을, 없으면 기본 목록을 쓴다.
+function allTraits(s, stage) {
+  const byStage = stage === undefined ? null : s.ascensionAdd?.individuality?.ascension?.[stage];
+  const out = new Set(ids(byStage?.length ? byStage : s.traits));
   for (const a of s.traitAdd || []) {
-    if (a.eventId !== 0 || a.limitCount !== -1 || a.condType !== 'none') continue;
+    if (a.eventId !== 0 || a.condType !== 'none') continue;
+    if (a.limitCount !== -1 && a.limitCount !== stage) continue;
     if (a.startedAt > buildSec || a.endedAt < buildSec) continue;
     for (const t of a.trait) out.add(t.id);
   }
-  return [...out];
+  return [...out].sort((x, y) => x - y);
+}
+// 단계별 특성이 서로 다를 때만 5단계(0~4) 목록을 돌려준다
+function traitsByStage(s) {
+  const lists = [0, 1, 2, 3, 4].map((st) => allTraits(s, st));
+  return lists.every((l) => l.join() === lists[4].join()) ? undefined : lists;
 }
 
 const best = (list) => list.reduce((a, b) => (b.priority > a.priority || (b.priority === a.priority && b.id > a.id) ? b : a));
@@ -125,7 +134,7 @@ for (const s of rawServants) {
   const g = s.atkGrowth;
   servants.push({
     id: s.id, no: s.collectionNo, name: s.name, cls: s.className, rarity: s.rarity, cost: s.cost,
-    attr: s.attribute, traits: allTraits(s),
+    attr: s.attribute, traits: allTraits(s, 4), asc: traitsByStage(s),
     atk: { max: g[s.lvMax - 1], 100: g[99], 120: g[119] },
     skills, np, passive,
     face: s.extraAssets?.faces?.ascension?.['1'] || '',

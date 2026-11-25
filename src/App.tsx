@@ -97,8 +97,10 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
     if (prefs.poolMode === 'owned' && !r?.owned) continue;
     const npDefault = svt.rarity >= 5 ? prefs.np5 : svt.rarity === 4 ? prefs.np4 : prefs.np3;
     const useOwn = !!r?.owned;
+    // 재림 단계에 따라 특성이 달라지는 서번트는 등록한 단계의 특성으로 판정한다
+    const stage = useOwn && svt.asc ? svt.asc[r.asc ?? 4] : undefined;
     out.push({
-      svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn ? r.skillLv : 10,
+      svt: stage ? { ...svt, traits: stage } : svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn ? r.skillLv : 10,
       skillLvs: useOwn ? r.skills : undefined, startNp: useOwn ? r.startNp : undefined,
       atk: useOwn && r.atk ? r.atk : svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
     });
@@ -434,6 +436,13 @@ function RosterTab({ data, roster, setRoster, onLogin }: {
                         {[10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map((n) => <option key={n} value={n}>{n}</option>)}
                       </select>
                     </label>
+                    {s.asc && (
+                      <label title="이 서번트는 영기재림 단계(모습)에 따라 특성이 달라져 조건부 인연 예장 적용 여부가 바뀝니다">모습
+                        <select value={r.asc ?? 4} onChange={(e) => upd(s.no, { asc: Number(e.target.value) })}>
+                          {[0, 1, 2, 3, 4].map((n) => <option key={n} value={n}>재림 {n}단계</option>)}
+                        </select>
+                      </label>
+                    )}
                     <label className="check"><input type="checkbox" checked={r.bondMax || !!r.bond15} disabled={!!r.bond15} onChange={(e) => upd(s.no, { bondMax: e.target.checked })} /> 인연 MAX</label>
                     <label className="check"><input type="checkbox" checked={!!r.bond15} onChange={(e) => upd(s.no, { bond15: e.target.checked })} /> 인연 15</label>
                   </div>
