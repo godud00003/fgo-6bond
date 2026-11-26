@@ -1,10 +1,10 @@
 // 게임 데이터 자동 업데이트: Atlas Academy에 새 한국 서버 데이터가 올라오면 브라우저에서 직접 받아 변환하고,
 // 결과를 이 브라우저(IndexedDB)에 저장한다. 변환 로직은 빌드 스크립트와 같은 것을 쓴다.
 import { API, SOURCES, transform, triggerSkillIds } from '../scripts/transform.mjs';
-import type { BondCE, MysticCode, Rel, Servant, War } from './engine/types.ts';
+import type { BondCE, ClassBoard, MysticCode, Rel, Servant, War } from './engine/types.ts';
 
 export interface Meta { kr: { hash: string; timestamp: number }; builtAt: number }
-export interface Dataset { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel; mcs: MysticCode[]; meta: Meta }
+export interface Dataset { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel; mcs: MysticCode[]; boards: ClassBoard[]; meta: Meta }
 
 /** Atlas가 알려 주는 한국 서버 데이터의 최신 버전 */
 export async function latestKr(): Promise<Meta['kr']> {

@@ -8,6 +8,7 @@ export const SOURCES = {
   'KR_basic_svt.json': 'export/KR/basic_svt.json',
   'ce.json': 'export/KR/nice_equip.json',
   'KR_nice_mystic_code.json': 'export/KR/nice_mystic_code.json',
+  'KR_nice_class_board.json': 'export/KR/nice_class_board.json',
   'JP_NiceClassRelation.json': 'export/JP/NiceClassRelation.json',
   'JP_NiceClassAttackRate.json': 'export/JP/NiceClassAttackRate.json',
   'JP_NiceAttributeRelation.json': 'export/JP/NiceAttributeRelation.json',
@@ -27,7 +28,7 @@ export function triggerSkillIds(rawServants) {
 
 /**
  * raw.files: SOURCES의 내부 이름 → 파싱된 JSON, raw.triggerSkills: 스킬 id → 스킬 JSON, now: 기준 시각(초).
- * 반환: { servants, ces, wars, mcs, names, rel }
+ * 반환: { servants, ces, wars, mcs, boards, names, rel }
  */
 export function transform(raw, now) {
   const ids = (list) => (list || []).map((t) => t.id);
@@ -305,5 +306,21 @@ export function transform(raw, now) {
     attribute: raw.files['JP_NiceAttributeRelation.json'],
   };
 
-  return { servants, ces, wars, mcs, names, rel };
+  // ---------- 클래스 스코어 ----------
+  // 보구 대미지에 닿는 칸만 남긴다: 카드 위력 UP(버스터 b·아츠 a·퀵 q), 보구 위력 UP(np). 값은 천분율.
+  const CARD_KIND = { 4001: 'a', 4002: 'b', 4003: 'q' };
+  const boards = [];
+  for (const bd of raw.files['KR_nice_class_board.json'] || []) {
+    const sq = {};
+    for (const q of bd.squares) {
+      const f = q.targetSkill?.functions?.[0], bf = f?.buffs?.[0];
+      if (q.skillType !== 'passive' || !bf) continue;
+      const val = f.svals?.[0]?.Value ?? 0;
+      const kind = bf.type === 'upNpdamage' ? 'np' : bf.type === 'upCommandatk' ? CARD_KIND[bf.ckSelfIndv?.[0]?.id] : undefined;
+      if (kind && val) sq[q.id] = [kind, val];
+    }
+    boards.push({ id: bd.id, name: bd.name, cls: bd.classes.map((c) => c.className), sq });
+  }
+
+  return { servants, ces, wars, mcs, boards, names, rel };
 }

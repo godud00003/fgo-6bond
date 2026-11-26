@@ -3,6 +3,10 @@ export interface Sv {
   Correction?: number; Target?: number; TargetRarityList?: number[];
   TargetList?: number[]; ParamAddMaxCount?: number; AndCheckIndividualityList?: number[]; FieldIndividuality?: number[];
 }
+/** 클래스 스코어 판 하나. sq: 칸 id → [종류(b 버스터·a 아츠·q 퀵 카드 위력, np 보구 위력), 천분율] */
+export interface ClassBoard { id: number; name: string; cls: string[]; sq: Record<string, [string, number]> }
+/** 클래스 이름 → [버스터, 아츠, 퀵 카드 위력, 보구 위력] 천분율 */
+export type ClassScore = Record<string, number[]>;
 export interface BuffDef {
   t: string; cs?: number[]; co?: number[]; v?: number[]; ur?: number[];
   /** 보유자가 이 특성 중 하나(또는 필드 특성)를 가질 때만 걸리는 버프 */

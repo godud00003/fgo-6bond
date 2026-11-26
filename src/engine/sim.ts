@@ -2,7 +2,7 @@
 // 평타 대미지, 적의 행동(피격 NP, 디버프, 사망), 적 패시브·내성, 오버차지는 다루지 않는다.
 // 평타로 얻는 NP는 계산하지 않고, 옵션(cardNp)으로 준 가정치만 더한다.
 // 후열: 전열이 퇴장(보구의 즉사 효과)하거나 오더 체인지를 쓰면 후열 선두가 들어온다.
-import type { ActorCfg, BuffDef, EnemyDef, Fn, QuestData, Rel, Servant, SimResult, Skill, Sv, TurnLog } from './types.ts';
+import type { ActorCfg, BuffDef, ClassScore, EnemyDef, Fn, QuestData, Rel, Servant, SimResult, Skill, Sv, TurnLog } from './types.ts';
 
 const CARD_TRAIT: Record<string, number> = { arts: 4001, buster: 4002, quick: 4003 };
 const CARD_DMG: Record<string, number> = { arts: 1, buster: 1.5, quick: 0.8 };
@@ -45,6 +45,8 @@ export interface SimExtra {
   cardNp?: number;
   /** 령주 1획을 쓸 수 있다: 아군 한 명의 NP를 100% 채운다(전투당 1회) */
   commandSpell?: boolean;
+  /** 클래스 스코어: 내 서번트용 / 프렌드 서번트용 */
+  score?: ClassScore; friendScore?: ClassScore;
 }
 export type SimMode = 'lazy' | 'eager' | 'relay';
 export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: SimMode }
@@ -619,6 +621,8 @@ function masterActor(skills: Skill[]): Actor {
   return { cfg: { svt, npLv: 1, skillLv: 10, atk: 0, startNp: 0, role: 'master' }, gauge: 0, buffs: [], cd: skills.map(() => 0), fired: false, reload: 0, reloaded: [] };
 }
 
+const SCORE_CARD = [4002, 4001, 4003]; // 버스터, 아츠, 퀵 카드 특성
+
 // 선쿨타임이 있는 스킬은 그만큼 기다려야 쓸 수 있다
 const mkActor = (cfg: ActorCfg): Actor => ({
   cfg, gauge: cfg.startNp, buffs: [], fired: false, reload: cfg.reload ?? 0, reloaded: [],
@@ -635,6 +639,13 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
   };
   setLabels(front);
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
+  // 클래스 스코어: 그 클래스 서번트에게 전투 내내 걸리는 카드 위력·보구 위력 UP
+  for (const a of [...s.actors, ...s.bench]) {
+    const sc = (a.cfg.friend ? opt.friendScore : opt.score)?.[a.cfg.svt.cls];
+    if (!sc) continue;
+    SCORE_CARD.forEach((card, i) => { if (sc[i]) a.buffs.push({ t: 'upCommandall', val: sc[i], turn: -1, count: -1, d: { t: 'upCommandall', cs: [card] } }); });
+    if (sc[3]) a.buffs.push({ t: 'upNpdamage', val: sc[3], turn: -1, count: -1, d: { t: 'upNpdamage' } });
+  }
   const total = quest.waves.reduce((n, w) => n + w.length, 0);
   const log: TurnLog[] = [];
   const bars = quest.waves.reduce((n, w) => n + w.reduce((m, e) => m + e.bars.length, 0), 0);

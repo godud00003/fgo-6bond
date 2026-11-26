@@ -5,4 +5,4 @@ export function triggerSkillIds(rawServants: unknown[]): number[];
 export function transform(
   raw: { files: Record<string, unknown>; triggerSkills: Record<number, unknown> },
   now: number,
-): { servants: unknown[]; ces: unknown[]; wars: unknown[]; mcs: unknown[]; names: Record<string, string>; rel: unknown };
+): { servants: unknown[]; ces: unknown[]; wars: unknown[]; mcs: unknown[]; boards: unknown[]; names: Record<string, string>; rel: unknown };

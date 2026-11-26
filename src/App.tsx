@@ -8,14 +8,16 @@ import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './
 import type { BondCE, MysticCode, QuestData, Rel, Servant, War } from './engine/types.ts';
 
 type Data = Dataset;
-import { importLogin, type Roster, type RosterEntry, type Stock } from './engine/importLogin.ts';
+import { boardScore, importLogin, type Roster, type RosterEntry, type Stock } from './engine/importLogin.ts';
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fAppend2: boolean; fAppend5: boolean; fou: number;
   friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; cs: boolean; autoUpdate: boolean;
+  /** 클래스 스코어: 내 것(없음 / 전부 개방 / 가져온 데이터), 프렌드 것, 가져온 판별 수치 */
+  score: 'none' | 'full' | 'own'; fScore: 'none' | 'full'; scoreOwn?: Record<number, number[]>;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false, cs: false, autoUpdate: true,
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false, cs: false, autoUpdate: true, score: 'none', fScore: 'none',
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -56,13 +58,13 @@ export default function App() {
       return r.json();
     });
     const base: Promise<Data> = embedded ? Promise.resolve(embedded)
-      : Promise.all(['servants.json', 'ces.json', 'wars.json', 'names.json', 'rel.json', 'mcs.json', 'meta.json'].map(get))
-        .then(([servants, ces, wars, names, rel, mcs, meta]) => ({ servants, ces, wars, names, rel, mcs, meta }));
+      : Promise.all(['servants.json', 'ces.json', 'wars.json', 'names.json', 'rel.json', 'mcs.json', 'boards.json', 'meta.json'].map(get))
+        .then(([servants, ces, wars, names, rel, mcs, boards, meta]) => ({ servants, ces, wars, names, rel, mcs, boards, meta }));
     base.then(async (b) => {
       if (!b.meta) b.meta = { kr: { hash: '', timestamp: 0 }, builtAt: 0 };
       // 이전에 이 브라우저에서 받아 둔 더 새로운 데이터가 있으면 그것을 쓴다
       const cached = await loadCached();
-      const cur = cached && cached.meta.kr.timestamp > b.meta.kr.timestamp ? cached : b;
+      const cur = cached && cached.boards && cached.meta.kr.timestamp > b.meta.kr.timestamp ? cached : b; // 예전 형식(클래스 스코어 없음)으로 저장된 데이터는 쓰지 않는다
       setData(cur);
       if (prefs.autoUpdate ?? true) void checkUpdate(cur, false);
     }).catch((e) => setError(String(e)));
@@ -100,11 +102,11 @@ export default function App() {
   /** 게임 로그인 데이터를 읽어 보유 서번트·인연 예장·코스트 상한을 한 번에 채운다(브라우저 안에서만 처리) */
   const onLogin = async (f: File): Promise<string> => {
     if (!data) return '';
-    const r = importLogin(await f.text(), data.servants, data.ces);
+    const r = importLogin(await f.text(), data.servants, data.ces, data.boards);
     setRoster(r.roster);
     setStock(r.stock);
-    setPrefs((p) => ({ ...p, poolMode: 'owned', costCap: r.costCap ?? p.costCap }));
-    return `가져왔습니다: 서번트 ${r.servants}기, 인연 예장 ${r.ceKinds}종 ${r.ceCopies}장${r.costCap ? `, 코스트 상한 ${r.costCap}` : ''}. 서번트 풀은 "내 보유 서번트만"으로 바꿨고, 이 브라우저에 저장했습니다.`;
+    setPrefs((p) => ({ ...p, poolMode: 'owned', costCap: r.costCap ?? p.costCap, ...(r.score ? { score: 'own' as const, scoreOwn: r.score } : {}) }));
+    return `가져왔습니다: 서번트 ${r.servants}기, 인연 예장 ${r.ceKinds}종 ${r.ceCopies}장${r.costCap ? `, 코스트 상한 ${r.costCap}` : ''}${r.score ? ', 클래스 스코어' : ''}. 서번트 풀은 "내 보유 서번트만"으로 바꿨고, 이 브라우저에 저장했습니다.`;
   };
 
   if (error) return <div className="app"><p className="error">데이터를 불러오지 못했습니다: {error}</p></div>;
@@ -210,7 +212,18 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
     };
     const ceStock: CEStock[] = data.ces.map((ce) => ({ ce, count: stock[ce.no]?.count ?? 1, mlb: stock[ce.no]?.mlb ?? true, atk: stock[ce.no]?.atk ?? ce.atk }));
     const [fNo, fMlb] = prefs.friendCe.split(':');
+    // 클래스 스코어: 판별 수치를 클래스 이름별로 펼친다
+    const scoreOf = (mode: string | undefined) => {
+      if (!mode || mode === 'none') return undefined;
+      const out: Record<string, number[]> = {};
+      for (const b of data.boards ?? []) {
+        const v = mode === 'full' ? boardScore(b) : prefs.scoreOwn?.[b.id];
+        if (v?.some((x) => x > 0)) for (const c of b.cls) out[c] = v;
+      }
+      return out;
+    };
     const settings: Settings = {
+      score: scoreOf(prefs.score), friendScore: scoreOf(prefs.fScore),
       maxTurns: prefs.maxTurns, costCap: prefs.costCap, roll: prefs.roll, startNp: prefs.append2 ? 2000 : 0, reload: prefs.append5 ? 3 : 0,
       friendAppendNp: (prefs.fAppend2 ?? true) ? 2000 : 0, friendReload: (prefs.fAppend5 ?? true) ? 3 : 0,
       // 프렌드 예장 칸은 하나: 인연 예장이거나, 시작 NP 예장(np:수치)이거나
@@ -332,6 +345,19 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           <label>찻주전자
             <select value={prefs.teapot} onChange={(e) => set('teapot', Number(e.target.value))}>
               <option value={1}>사용 안 함</option><option value={2}>인연 2배</option><option value={3}>인연 3배</option>
+            </select>
+          </label>
+          <label title="클래스 스코어의 카드 위력 UP·보구 위력 UP 칸을 대미지에 반영합니다. 계정 데이터를 가져오면 실제로 연 칸 기준으로 계산할 수 있습니다. 크리티컬·스타 칸은 평타에만 영향이 있어 계산하지 않습니다.">클래스 스코어 (내 서번트)
+            <select value={prefs.score ?? 'none'} onChange={(e) => set('score', e.target.value as Prefs['score'])}>
+              <option value="none">적용 안 함</option>
+              <option value="full">전부 개방 (카드 +20%, 보구 +10%)</option>
+              {prefs.scoreOwn && <option value="own">가져온 내 데이터</option>}
+            </select>
+          </label>
+          <label title="프렌드 서번트에는 그 프렌드의 클래스 스코어가 적용됩니다. 빌리는 상대에 맞게 고르세요.">클래스 스코어 (프렌드)
+            <select value={prefs.fScore ?? 'none'} onChange={(e) => set('fScore', e.target.value as Prefs['fScore'])}>
+              <option value="none">적용 안 함</option>
+              <option value="full">전부 개방</option>
             </select>
           </label>
           <label className="check" title="2부 6장의 일부 전투처럼 출전 서번트 전원(프렌드 포함)의 레벨이 1이 되는 기믹. 스킬·보구 레벨은 그대로이고 ATK만 레벨 1 수치로 계산합니다.">

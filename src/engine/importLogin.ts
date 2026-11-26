@@ -1,6 +1,6 @@
 // 게임 로그인 응답(HTTPS 스니핑으로 얻는 JSON, Chaldea가 받는 것과 같은 형식)에서
 // 보유 서번트·인연 예장·코스트 상한을 읽는다. 필요한 수치만 뽑고 원본은 보관하지 않는다.
-import type { BondCE, Servant } from './types.ts';
+import type { BondCE, ClassBoard, Servant } from './types.ts';
 
 export interface RosterEntry {
   owned: boolean; npLv: number; lv: 'max' | '100' | '120'; skillLv: number; bondMax: boolean; bond15?: boolean;
@@ -24,6 +24,8 @@ export type Stock = Record<number, { count: number; mlb: boolean; atk?: number }
 
 export interface LoginImport {
   roster: Roster; stock: Stock; costCap: number | null;
+  /** 클래스 스코어: 판 id → [버스터, 아츠, 퀵, 보구] 천분율. 파일에 없으면 null */
+  score: Record<number, number[]> | null;
   servants: number; ceKinds: number; ceCopies: number; unknown: number;
 }
 
@@ -41,11 +43,19 @@ function parse(text: string): any {
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(decodeURIComponent(t)), (c) => c.charCodeAt(0))));
 }
 
-export function importLogin(text: string, servants: Servant[], ces: BondCE[]): LoginImport {
+/** 판 하나에서 연 칸들의 합계: [버스터, 아츠, 퀵 카드 위력, 보구 위력] 천분율. ids를 주지 않으면 전부 연 것으로 본다. */
+export function boardScore(board: ClassBoard, ids?: number[]): number[] {
+  const out = [0, 0, 0, 0];
+  const open = ids && new Set(ids.map(String));
+  for (const [id, [kind, val]] of Object.entries(board.sq)) if (!open || open.has(id)) out['baq'.indexOf(kind) >= 0 ? 'baq'.indexOf(kind) : 3] += val;
+  return out;
+}
+
+export function importLogin(text: string, servants: Servant[], ces: BondCE[], boards: ClassBoard[] = []): LoginImport {
   let json: any;
   try { json = parse(text); } catch { throw new Error('JSON 형식이 아닙니다. 게임 로그인 응답 파일이나 Chaldea 백업 파일인지 확인하세요.'); }
   // Chaldea 앱의 유저데이터 백업(chaldea-userdata-*.json)
-  if (Array.isArray(json?.users) && json.users.length) return importChaldea(json, servants, ces);
+  if (Array.isArray(json?.users) && json.users.length) return importChaldea(json, servants, ces, boards);
   const tables = json?.cache?.replaced ?? json?.replaced ?? json;
   const rows: UserSvt[] = [...(tables?.userSvt ?? []), ...(tables?.userSvtStorage ?? [])];
   if (!rows.length) throw new Error('보유 서번트 목록(userSvt)이 없습니다. 게임 로그인 응답 파일인지 확인하세요.');
@@ -109,7 +119,17 @@ export function importLogin(text: string, servants: Servant[], ces: BondCE[]): L
     ceCopies += limits.length;
   }
   const costMax = tables.userGame?.[0]?.costMax;
+  // 클래스 스코어: 판마다 강화한 칸 id 목록
+  let classScore: LoginImport['score'] = null;
+  if (Array.isArray(tables.userClassBoardSquare)) {
+    classScore = {};
+    for (const b of boards) {
+      const row = tables.userClassBoardSquare.find((r: any) => r.classBoardBaseId === b.id);
+      classScore[b.id] = boardScore(b, row?.classBoardSquareIds ?? []);
+    }
+  }
   return {
+    score: classScore,
     roster, stock, costCap: typeof costMax === 'number' && costMax > 0 ? costMax : null,
     servants: best.size, ceKinds: ceLimits.size, ceCopies, unknown,
   };
@@ -144,7 +164,7 @@ function atkAt(svt: Servant, lv: number, maxLv: number): number {
  * (실제 계정과 대조하면 재림한 서번트는 대개 그 단계의 상한까지, 재림하지 않은 서번트는 대개 Lv1이다.)
  * 예장은 종류별 보유 여부만 있어 1장으로 보고, 코스트 상한은 들어 있지 않다.
  */
-function importChaldea(json: any, servants: Servant[], ces: BondCE[]): LoginImport {
+function importChaldea(json: any, servants: Servant[], ces: BondCE[], boards: ClassBoard[]): LoginImport {
   const user = json.users[json.curUserKey ?? 0] ?? json.users[0];
   const roster: Roster = {};
   let count = 0;
@@ -185,5 +205,10 @@ function importChaldea(json: any, servants: Servant[], ces: BondCE[]): LoginImpo
     const atk = has ? Math.floor(ce.atk * (0.25 + (0.75 * (Math.min(c.lv ?? 1, lvMax) - 1)) / (lvMax - 1))) : 0;
     stock[ce.no] = { count: has ? 1 : 0, mlb: has && (c.limitCount ?? 0) >= 4, atk };
   }
-  return { roster, stock, costCap: null, servants: count, ceKinds: kinds, ceCopies: kinds, unknown: 0 };
+  let score: LoginImport['score'] = null;
+  if (user.classBoards) {
+    score = {};
+    for (const b of boards) score[b.id] = boardScore(b, user.classBoards[b.id]?.enhancedSquares ?? []);
+  }
+  return { score, roster, stock, costCap: null, servants: count, ceKinds: kinds, ceCopies: kinds, unknown: 0 };
 }

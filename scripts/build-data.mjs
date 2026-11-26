@@ -46,6 +46,6 @@ const write = (f, v) => {
   fs.writeFileSync(path.join(outDir, f), s);
   console.log(f, (s.length / 1024).toFixed(0) + ' KB');
 };
-for (const k of ['servants', 'ces', 'wars', 'mcs', 'names', 'rel']) write(`${k}.json`, out[k]);
+for (const k of ['servants', 'ces', 'wars', 'mcs', 'boards', 'names', 'rel']) write(`${k}.json`, out[k]);
 write('meta.json', meta);
 console.log('servants', out.servants.length, 'bond CEs', out.ces.length, 'wars', out.wars.length);

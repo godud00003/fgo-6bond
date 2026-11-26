@@ -1,6 +1,6 @@
 // 클리어 가능한 전열 조합을 찾고, 그 위에서 인연 포인트 총합이 최대가 되는 파티·예장을 고른다.
 import { simulateBest } from './sim.ts';
-import type { ActorCfg, BondCE, MysticCode, QuestData, Rel, Servant, SimResult } from './types.ts';
+import type { ActorCfg, BondCE, ClassScore, MysticCode, QuestData, Rel, Servant, SimResult } from './types.ts';
 
 export interface PoolEntry {
   svt: Servant; npLv: number; skillLv: number; atk: number; weight: number; bond15?: boolean;
@@ -35,6 +35,8 @@ export interface Settings {
   cardNp?: number;
   /** 령주 1획(NP +100%)을 쓰는 편성도 찾는다. 령주 없이 되는 편성은 령주를 쓰지 않는다. */
   commandSpell?: boolean;
+  /** 클래스 스코어(내 서번트 / 프렌드) */
+  score?: ClassScore; friendScore?: ClassScore;
   /** 프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성을 허용한다(기본 허용) */
   allowDup?: boolean;
   /** 반드시 내 파티에 포함할 서번트(도감 번호). 딜러·서포터가 아니면 인연용 자리에 넣는다. */
@@ -105,7 +107,7 @@ export function search(
   let useCs = false; // 지금 계산에서 령주를 쓸 수 있는가(령주 없이 안 될 때만 켠다)
   const run = (lineup: ActorCfg[], mc: MysticCode | null) => {
     simulated++;
-    return simulateBest(lineup, quest, rel, st.maxTurns, st.roll, { mc: mc?.skills, cardNp: st.cardNp, commandSpell: useCs });
+    return simulateBest(lineup, quest, rel, st.maxTurns, st.roll, { mc: mc?.skills, cardNp: st.cardNp, commandSpell: useCs, score: st.score, friendScore: st.friendScore });
   };
   const dmgOf = (s: SimResult) => s.log.reduce((n, t) => n + t.nps.reduce((m, x) => m + x.hits.reduce((k, h) => k + Math.min(h.dmg, h.hp), 0), 0), 0);
 
@@ -281,7 +283,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
   if (dealers.length > 1) {
     const lastQuest: QuestData = { ...quest, waves: [quest.waves[quest.waves.length - 1]], waveCalls: undefined };
     const finishers = dealers
-      .map((d) => ({ d, score: dmgOf(simulateBest([{ ...cfg(d, 'dealer'), startNp: 10000 }], lastQuest, rel, 1, st.roll, { cardNp: st.cardNp })) }))
+      .map((d) => ({ d, score: dmgOf(simulateBest([{ ...cfg(d, 'dealer'), startNp: 10000 }], lastQuest, rel, 1, st.roll, { cardNp: st.cardNp, score: st.score })) }))
       .sort((a, b) => b.score - a.score).slice(0, 8).map((x) => x.d);
     for (const d of finishers) if (!top.includes(d)) top.push(d);
   }
