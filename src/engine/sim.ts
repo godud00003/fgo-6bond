@@ -424,7 +424,7 @@ function useSkill(s: State, r: SkillRef, target: Actor, log?: TurnLog) {
   if (r.a.reload > 0 && !r.a.reloaded[r.i]) { r.a.cd[r.i] = Math.max(0, r.a.cd[r.i] - 1); r.a.reload--; r.a.reloaded[r.i] = true; }
   s.used++;
   const needsTarget = sk.fn.some((f) => f.tg === 'ptOne');
-  log?.skills.push({ who: nameOf(r.a), skill: sk.name, target: needsTarget ? nameOf(target) : undefined });
+  log?.skills.push({ who: nameOf(r.a), skill: sk === COMMAND_SPELL ? sk.name : `${sk.name}(${r.i + 1}스)`, target: needsTarget ? nameOf(target) : undefined });
 }
 
 /** 낭비가 가장 적은 NP 충전 스킬 조합으로 대상의 게이지를 100%까지 채운다. */
