@@ -36,6 +36,18 @@ interface State {
   expendPhase?: boolean;
   /** 필드 특성을 주는 버프가 한 번이라도 걸렸는가 */
   fieldBuff?: boolean;
+  /** 스킬이 보구에 영향을 주는지 가리는 데 쓰는 편성·퀘스트 정보(전투 내내 같다) */
+  ctx: SkillCtx;
+}
+interface SkillCtx {
+  /** 걸린 상태의 수를 세는 효과(중첩 특공, 상태 특공, 상태 수 비례 충전)가 있다: 어떤 버프든 의미가 있을 수 있다 */
+  stateful: boolean;
+  /** 서번트나 적의 특성이 전투 중 바뀔 수 있다(특성 부여 스킬): 특성 조건은 따지지 않는다 */
+  dynTraits: boolean;
+  /** 무적·회피가 나올 수 있다(적 패시브, 오베론 보구) */
+  evasive: boolean;
+  /** 이 퀘스트에 나오는 적들의 특성 */
+  enemyTraits: Set<number>;
 }
 
 export interface SimExtra {
@@ -47,6 +59,10 @@ export interface SimExtra {
   commandSpell?: boolean;
   /** 클래스 스코어: 내 서번트용 / 프렌드 서번트용 */
   score?: ClassScore; friendScore?: ClassScore;
+  /** false면 보구 계획 탐색(서포터 보구, 한 턴에 보구 여러 개)을 하지 않는다 */
+  plan?: boolean;
+  /** false면 NP 수급 상한으로 미리 걸러 내지 않는다(검증용) */
+  prune?: boolean;
 }
 export type SimMode = 'lazy' | 'eager' | 'relay';
 export interface SimOptions extends SimExtra { maxTurns: number; roll: number; mode: SimMode }
@@ -146,6 +162,7 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
     case 'ptAll': case 'ptFull': allies = s.actors; break;
     case 'ptOne': allies = ally ? [ally] : []; break;
     case 'ptOther': case 'ptOtherFull': allies = s.actors.filter((a) => a !== user); break;
+    case 'ptSelfAnotherFirst': { const o = s.actors.find((a) => a !== user); allies = o ? [o] : []; break; }
     case 'enemyAll': enemies = alive(s); break;
     case 'enemy': { const e = pickEnemy(s); enemies = e ? [e] : []; break; }
     default: return;
@@ -346,7 +363,8 @@ function fireNp(s: State, a: Actor, log?: TurnLog, chain = 0) {
   }
   a.gauge = Math.min(30000, a.gauge + refund);
   entry.refund = refund;
-  for (const b of a.buffs) if (b.count > 0 && CONSUMED.has(b.t)) b.count--;
+  // 횟수제 버프는 공격할 때만 줄어든다(대미지 없는 보구는 그대로 둔다)
+  if (np.dmg) for (const b of a.buffs) if (b.count > 0 && CONSUMED.has(b.t)) b.count--;
   a.buffs = a.buffs.filter((b) => b.count !== 0);
   log?.nps.push(entry);
   for (const v of leaving) leave(s, v, log);
@@ -401,6 +419,94 @@ const hasBuff = (r: SkillRef) => skillFns(r).some((f) => f.b || BUFFLIKE.has(f.t
 const CHARGE = new Set(['gainNp', 'gainNpBuffIndividualSum', 'gainNpIndividualSum', 'gainNpTargetSum', 'gainMultiplyNp', 'absorbNp']);
 const shortens = (r: SkillRef) => skillFns(r).some((f) => f.t === 'shortenSkill');
 const hasCharge = (r: SkillRef) => skillFns(r).some((f) => CHARGE.has(f.t));
+
+// 보구 대미지·NP 회수에 영향을 주는 버프(아군에게 거는 것 / 적에게 거는 것)와 조건 없이 의미가 있는 버프
+const ATT_BUFF = new Set(['upDamageIndividuality', 'upCommandall', 'downCommandall', 'upAtk', 'downAtk', 'upDamage', 'upNpdamage', 'downNpdamage', 'upDropnp', 'downDropnp', 'addDamage']);
+const DEF_BUFF = new Set(['downDefence', 'upDefence', 'downDefenceNpdamage', 'upDefenceNpdamage', 'subSelfdamage', 'addSelfdamage', 'downDefencecommandall', 'addIndividuality', 'invincible', 'avoidance']);
+const ANY_BUFF = new Set(['upDamageIndividualityActiveonly', 'buffRate', 'upChagetd', 'pierceDefence', 'addIndividuality', 'fieldIndividuality', 'regainNp', 'turnEnd']);
+const STATE_FN = new Set(['damageNpIndividualSum', 'damageNpStateIndividualFix', 'gainNpBuffIndividualSum', 'gainNpIndividualSum', 'gainNpTargetSum']);
+
+// 편성마다 다시 훑지 않도록 서번트·마술예장·퀘스트별로 한 번만 계산해 둔다
+interface Flags { stateful: boolean; dyn: boolean; evasive: boolean }
+const flagsOf = (fns: Fn[]): Flags => {
+  const buffs = fns.flatMap((f) => f.b ?? []);
+  return {
+    stateful: fns.some((f) => STATE_FN.has(f.t)) || buffs.some((b) => b.t === 'upDamageIndividualityActiveonly'),
+    dyn: buffs.some((b) => b.t === 'addIndividuality'),
+    evasive: buffs.some((b) => b.t === 'invincible' || b.t === 'avoidance'),
+  };
+};
+const svtFlags = new WeakMap<Servant, Flags>();
+const mcFlags = new WeakMap<Skill[], Flags>();
+const questFlags = new WeakMap<QuestData, { dyn: boolean; evasive: boolean; enemyTraits: Set<number> }>();
+function skillCtx(front: ActorCfg[], quest: QuestData, mc: Skill[] | null | undefined): SkillCtx {
+  let q = questFlags.get(quest);
+  if (!q) {
+    const cur = { dyn: false, evasive: false, enemyTraits: new Set<number>() };
+    const scan = (e: EnemyDef) => {
+      for (const x of e.traits) cur.enemyTraits.add(x);
+      for (const p of e.passive ?? []) { if (p.t === 'invincible' || p.t === 'avoidance') cur.evasive = true; if (p.t === 'addIndividuality') cur.enemyTraits.add(p.val); }
+      for (const c of e.call ?? []) scan(c);
+    };
+    for (const w of quest.waves) for (const e of w) scan(e);
+    for (const w of quest.waveCalls ?? []) for (const e of w) scan(e);
+    questFlags.set(quest, (q = cur));
+  }
+  let stateful = false, dyn = q.dyn, evasive = q.evasive;
+  const add = (f: Flags) => { stateful ||= f.stateful; dyn ||= f.dyn; evasive ||= f.evasive; };
+  for (const c of front) {
+    let f = svtFlags.get(c.svt);
+    if (!f) svtFlags.set(c.svt, (f = flagsOf([...c.svt.skills.flatMap((sk) => sk.fn), ...(c.svt.np?.fn ?? []), ...c.svt.passive])));
+    add(f);
+  }
+  if (mc?.length) {
+    let f = mcFlags.get(mc);
+    if (!f) mcFlags.set(mc, (f = flagsOf(mc.flatMap((sk) => sk.fn))));
+    add(f);
+  }
+  return { stateful, dynTraits: dyn, evasive, enemyTraits: q.enemyTraits };
+}
+/** 아군에게 거는 버프 d가 a의 보구에 적용될 수 있는가(카드 종류, 자신·적의 특성 조건) */
+function buffFits(s: State, d: BuffDef, a: Actor): boolean {
+  const np = a.cfg.svt.np;
+  if (!np?.dmg || a.disabled) return false;
+  if (d.cs?.length) {
+    const cardIds = d.cs.filter(isCardTrait);
+    if (cardIds.length && !cardIds.includes(CARD_TRAIT[np.card]) && !cardIds.includes(NP_CARD_TRAIT)) return false;
+    if (!s.ctx.dynTraits) {
+      const other = d.cs.filter((x) => !isCardTrait(x));
+      if (other.length && !other.some((x) => a.cfg.svt.traits.includes(x))) return false;
+    }
+  }
+  return s.ctx.dynTraits || !d.co?.length || d.co.some((x) => s.ctx.enemyTraits.has(x));
+}
+/**
+ * 이 스킬을 target을 대상으로 썼을 때 보구(대미지·NP)에 영향이 있는가.
+ * 카드 종류가 맞지 않는 카드 버프, 이 퀘스트에 없는 적에 대한 특공, 무적이 없는데 쓰는 무적 관통,
+ * 방어·회복처럼 계산에 들어가지 않는 효과만 있는 스킬은 쓰지 않는다.
+ */
+function useful(s: State, r: SkillRef, target: Actor): boolean {
+  if (s.ctx.stateful) return true;
+  const lv = skillLvOf(r) - 1;
+  for (const fn of skillFns(r)) {
+    const rate = svAt(fn, lv).Rate;
+    if (rate !== undefined && rate < 1000) continue; // 확률 효과는 실패로 본다
+    if (!fn.b) { if (CHARGE.has(fn.t) || BUFFLIKE.has(fn.t)) return true; continue; }
+    if (fn.tg.startsWith('enemy')) { if (fn.b.some((d) => DEF_BUFF.has(d.t))) return true; continue; }
+    const rec = fn.tg === 'self' ? [r.a] : fn.tg === 'ptOne' ? [target]
+      : fn.tg === 'ptAll' || fn.tg === 'ptFull' ? s.actors
+        : fn.tg === 'ptOther' || fn.tg === 'ptOtherFull' ? s.actors.filter((a) => a !== r.a) : [];
+    if (!rec.length) continue;
+    for (const d of fn.b) {
+      if (ANY_BUFF.has(d.t)) return true;
+      if (d.t === 'pierceInvincible' || d.t === 'breakAvoidance') { if (s.ctx.evasive && rec.some((a) => a.cfg.svt.np?.dmg)) return true; continue; }
+      if (ATT_BUFF.has(d.t) && rec.some((a) => buffFits(s, d, a))) return true;
+    }
+  }
+  return false;
+}
+/** 지금 쓸 수 있는 스킬 중 target의 보구에 도움이 되는 버프 스킬 */
+const buffSkills = (s: State, target: Actor) => available(s).filter((r) => hasBuff(r) && useful(s, r, target));
 
 function available(s: State): SkillRef[] {
   const out: SkillRef[] = [];
@@ -499,7 +605,7 @@ function prepareSolo(s: State, i: number, expendable: boolean, log?: TurnLog): b
   if (!ensureCharge(s, c, log)) { s.expend = null; s.expendPhase = false; return false; }
   for (let pass = 0; pass < 2 && !clearsAlone(s, i); pass++) {
     // 행동 불능을 부르는 스킬은 맨 마지막에, NP 충전이 딸린 버프는 그 앞에 쓴다(충전은 뒤 웨이브에도 쓸모가 있다)
-    const list = available(s).filter((r) => hasBuff(r) && helps(r, c) && finOk(s, r, c))
+    const list = buffSkills(s, c).filter((r) => helps(r, c) && finOk(s, r, c))
       .sort((x, y) => Number(!!x.a.cfg.svt.skills[x.i].fin) - Number(!!y.a.cfg.svt.skills[y.i].fin) || Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === c) - Number(x.a === c));
     for (const r of list) { if (clearsAlone(s, i)) break; useSkill(s, r, c, log); }
   }
@@ -534,6 +640,10 @@ function playRelay(s: State, log: TurnLog): boolean {
   return true;
 }
 
+/** 스킬을 쓰는 순서. 쿨타임 단축 스킬은 다른 스킬을 쓴 뒤에 써야 효과가 있으므로 맨 뒤로 보낸다. */
+const skillOrder = (s: State, list: SkillRef[], d: Actor) =>
+  list.filter((r) => finOk(s, r, d)).sort((x, y) => Number(shortens(x)) - Number(shortens(y)) || Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
+
 function playTurn(s: State, mode: SimMode, log: TurnLog) {
   orderChange(s, log);
   if (mode === 'relay') {
@@ -543,11 +653,9 @@ function playTurn(s: State, mode: SimMode, log: TurnLog) {
   const ds = dealers(s).sort((x, y) => Number(!!y.cfg.main) - Number(!!x.cfg.main));
   if (!ds.length) return;
   const main = ds.find((d) => reachable(s, d));
-  const order = (list: SkillRef[], d: Actor) =>
-    // 쿨타임 단축 스킬은 다른 스킬을 쓴 뒤에 써야 효과가 있으므로 맨 뒤로 보낸다
-    list.filter((r) => finOk(s, r, d)).sort((x, y) => Number(shortens(x)) - Number(shortens(y)) || Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
+  const order = (list: SkillRef[], d: Actor) => skillOrder(s, list, d);
   if (mode === 'eager' && main) {
-    for (const r of order(available(s).filter((r) => hasBuff(r) && !hasCharge(r) && !shortens(r)), main)) useSkill(s, r, main, log);
+    for (const r of order(buffSkills(s, main).filter((r) => !hasCharge(r) && !shortens(r)), main)) useSkill(s, r, main, log);
   }
   // 쿨타임 단축으로 같은 턴에 다시 쓸 수 있게 된 스킬이 있으면 한 번 더 돈다
   for (let pass = 0; pass < 3; pass++) {
@@ -558,7 +666,7 @@ function playTurn(s: State, mode: SimMode, log: TurnLog) {
     }
     const ready = ds.find((d) => d.gauge >= 10000);
     if (ready) {
-      for (const r of order(available(s).filter(hasBuff), ready)) {
+      for (const r of order(buffSkills(s, ready), ready)) {
         if (wouldClear(s)) break;
         // 쿨타임 단축은 줄일 쿨타임이 있을 때만 쓴다
         if (shortens(r) && !skillFns(r).some((f) => f.b || f.t !== 'shortenSkill') && !ready.cd.some((c) => c > 0) && !s.actors.some((a) => a !== ready && a.cd.some((c) => c > 0))) continue;
@@ -629,14 +737,14 @@ const mkActor = (cfg: ActorCfg): Actor => ({
   cd: cfg.svt.skills.map((sk, i) => { const lv = cfg.skillLvs?.[i] ?? cfg.skillLv; return sk.init?.[Math.min(lv, sk.init.length) - 1] ?? 0; }),
 });
 
-/** front: 편성 전체. bench 표시가 있는 서번트는 후열에서 시작한다. */
-export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimOptions): SimResult {
+function initState(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra & { roll: number }): State {
   const s: State = {
     actors: front.filter((c) => !c.bench).map(mkActor),
     bench: front.filter((c) => c.bench).map(mkActor),
     field: [], reserve: [], wave: 0, quest, rel, roll: opt.roll, killed: 0, broken: 0,
-    master: opt.mc?.length || opt.commandSpell ? masterActor([...(opt.mc ?? []), ...(opt.commandSpell ? [COMMAND_SPELL] : [])]) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0, expend: null,
+    master: opt.mc?.length || opt.commandSpell ? masterActor([...(opt.mc ?? []), ...(opt.commandSpell ? [COMMAND_SPELL] : [])]) : null, cardNp: opt.cardNp ?? 0, fieldAdd: [], used: 0, expend: null, ctx: null as unknown as SkillCtx,
   };
+  s.ctx = skillCtx(front, quest, opt.mc);
   setLabels(front);
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   // 클래스 스코어: 그 클래스 서번트에게 전투 내내 걸리는 카드 위력·보구 위력 UP
@@ -646,9 +754,17 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
     SCORE_CARD.forEach((card, i) => { if (sc[i]) a.buffs.push({ t: 'upCommandall', val: sc[i], turn: -1, count: -1, d: { t: 'upCommandall', cs: [card] } }); });
     if (sc[3]) a.buffs.push({ t: 'upNpdamage', val: sc[3], turn: -1, count: -1, d: { t: 'upNpdamage' } });
   }
-  const total = quest.waves.reduce((n, w) => n + w.length, 0);
+  return s;
+}
+const countTotal = (quest: QuestData) => quest.waves.reduce((n, w) => n + w.length, 0);
+const countBars = (quest: QuestData) => quest.waves.reduce((n, w) => n + w.reduce((m, e) => m + e.bars.length, 0), 0);
+
+/** front: 편성 전체. bench 표시가 있는 서번트는 후열에서 시작한다. */
+export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimOptions): SimResult {
+  const s = initState(front, quest, rel, opt);
+  const total = countTotal(quest);
   const log: TurnLog[] = [];
-  const bars = quest.waves.reduce((n, w) => n + w.reduce((m, e) => m + e.bars.length, 0), 0);
+  const bars = countBars(quest);
   if (!total) return { cleared: false, turns: 0, killed: 0, total, log, broken: 0, bars };
   loadWave(s);
   for (let turn = 1; turn <= opt.maxTurns; turn++) {
@@ -660,8 +776,303 @@ export function simulate(front: ActorCfg[], quest: QuestData, rel: Rel, opt: Sim
   return { cleared: false, turns: opt.maxTurns, killed: s.killed, total, log, broken: s.broken, bars };
 }
 
-/** 두 가지 스킬 운용 방침을 모두 돌려 더 나은 결과를 고른다. */
+// ---------------------------------------------------------------- 보구 계획 탐색
+// 위의 운용 방침(lazy·eager·relay)은 "누가 언제 보구를 쏠지"를 정해진 규칙으로 고른다.
+// 그 규칙으로 안 되는 편성은 턴마다 보구를 쏠 서번트의 조합을 하나씩 시도한다:
+// 서포터의 보구(대미지 없는 버프·디버프 보구 포함), 한 턴에 보구 2~3개를 함께 쏘는 경우가 여기서 다뤄진다.
+
+/** 보구를 쓸 수 있는 서번트. 대미지가 없는 보구는 효과가 하나라도 있을 때만. */
+const hasUsableNp = (a: Actor) => !a.disabled && !!a.cfg.svt.np && (a.cfg.svt.np.dmg || a.cfg.svt.np.fn.length > 0);
+/** 보구에 다른 아군을 돕는 효과(아군 버프·NP 충전, 적 디버프)가 있는가 */
+const aidsOthers = (a: Actor) => a.cfg.svt.np!.fn.some((f) => !f.t.startsWith('damageNp') && f.tg !== 'self' && (!!f.b || f.t === 'gainNp'));
+/**
+ * 같은 턴에 쏘는 보구의 순서: 대미지 없는 보구(버프·디버프) → 대미지 보구.
+ * 대미지 보구끼리는 뒤따르는 보구를 돕는 쪽과 약한 쪽을 먼저, 주 딜러를 뒤에 둔다(뒤일수록 오버차지가 오른다).
+ * 적에게 무적을 거는 보구(오베론)는 맨 뒤.
+ */
+function fireOrder(list: Actor[]): Actor[] {
+  const key = (a: Actor) => (a.cfg.svt.np!.dmg ? 8 : 0) + (blocksLater(a) ? 4 : 0) + (a.cfg.main ? 2 : 0) + (aidsOthers(a) ? 0 : 1);
+  return list.slice().sort((x, y) => key(x) - key(y) || x.cfg.atk - y.cfg.atk);
+}
+/** 계획한 보구를 순서대로 쏜다. 필드가 비면 남은 대미지 보구는 아낀다. */
+function firePlan(s: State, plan: Actor[], log?: TurnLog) {
+  let chain = 0;
+  for (const a of plan) {
+    if (!s.actors.includes(a) || a.gauge < 10000) continue;
+    if (a.cfg.svt.np!.dmg && !alive(s).length) continue;
+    fireNp(s, a, log, chain++);
+  }
+}
+function planClears(s: State, idx: number[]): boolean {
+  const c = cloneState(s);
+  firePlan(c, idx.map((i) => c.actors[i]));
+  return !alive(c).length;
+}
+function* permutations(a: number[]): Generator<number[]> {
+  if (a.length <= 1) { yield a; return; }
+  for (let i = 0; i < a.length; i++) for (const p of permutations([...a.slice(0, i), ...a.slice(i + 1)])) yield [a[i], ...p];
+}
+/** 계획한 서번트 전원의 NP를 채울 수 있는 충전 순서를 찾는다(없으면 null). 상태는 바꾸지 않는다. */
+function chargeOrder(s: State, idx: number[]): number[] | null {
+  if (idx.every((i) => s.actors[i].gauge >= 10000)) return idx;
+  // 쓸 수 있는 충전을 다 합쳐도 모자라면 순서를 따질 것도 없다
+  const plan = idx.map((i) => s.actors[i]);
+  let need = 0, pool = 0;
+  for (const a of plan) need += Math.max(0, 10000 - a.gauge);
+  for (const r of available(s)) for (const fn of skillFns(r)) {
+    if (fn.t !== 'gainNp') continue;
+    const v = svAt(fn, skillLvOf(r) - 1).Value ?? 0;
+    if (fn.tg === 'ptOne') pool += v;
+    else if (fn.tg === 'self') pool += plan.includes(r.a) ? v : 0;
+    else if (fn.tg === 'ptAll' || fn.tg === 'ptFull') pool += v * plan.length;
+    else if (fn.tg === 'ptOther' || fn.tg === 'ptOtherFull') pool += v * plan.filter((a) => a !== r.a).length;
+  }
+  if (pool < need) return null;
+  for (const p of permutations(idx)) {
+    const c = cloneState(s);
+    if (p.every((i) => ensureCharge(c, c.actors[i]))) return p;
+  }
+  return null;
+}
+/**
+ * 계획대로 한 턴을 진행한다: idx(쏘는 순서)의 서번트 전원의 NP를 채우고, 버프를 걸고, 보구를 쏜다.
+ * eager면 충전이 없는 버프를 먼저 모두 쓰고, 아니면 이번 턴의 보구로 필드가 비워질 때까지만 쓴다.
+ * allIn(뒤가 없는 마지막 웨이브)이면 아낄 이유가 없으므로 확인 없이 모두 쓴다. 버프를 남기고 멈췄으면 note.spared를 켠다.
+ * 전원의 NP를 채우지 못하면 false.
+ */
+function playPlan(s: State, idx: number[], charge: number[], eager: boolean, allIn: boolean, log: TurnLog, note?: { spared: boolean }): boolean {
+  const plan = idx.map((i) => s.actors[i]);
+  const dmg = plan.filter((a) => a.cfg.svt.np!.dmg);
+  // 대상을 고르는 버프는 가장 뒤에 쏘는 대미지 보구(주 딜러가 있으면 주 딜러)에게 준다
+  const target = dmg.find((a) => a.cfg.main) ?? dmg[dmg.length - 1];
+  if (eager && target) {
+    for (const r of skillOrder(s, buffSkills(s, target).filter((r) => !hasCharge(r) && !shortens(r)), target)) useSkill(s, r, target, log);
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    const before = s.used;
+    for (const i of charge) ensureCharge(s, s.actors[i], log);
+    if (target && plan.every((a) => a.gauge >= 10000)) {
+      for (const r of skillOrder(s, buffSkills(s, target), target)) {
+        if (!allIn && planClears(s, idx)) { if (note) note.spared = true; break; }
+        if (shortens(r) && !skillFns(r).some((f) => f.b || f.t !== 'shortenSkill') && !target.cd.some((c) => c > 0) && !s.actors.some((a) => a !== target && a.cd.some((c) => c > 0))) continue;
+        useSkill(s, r, target, log);
+      }
+    }
+    if (s.used === before) break;
+  }
+  if (!plan.every((a) => a.gauge >= 10000)) return false;
+  firePlan(s, plan, log);
+  return true;
+}
+
+/** 편성 하나에서 시도하는 턴 진행 수의 상한(대부분의 편성은 첫 턴에 쏠 보구가 없어 바로 끝난다) */
+const PLAN_BUDGET = 80;
+
+/**
+ * 턴마다 보구를 쏠 서번트의 조합을 바꿔 가며 클리어되는 진행을 찾는다. 못 찾으면 null.
+ * 먼저 웨이브 수만큼의 턴으로 찾고, 안 되면 턴 제한까지 늘려 찾는다.
+ */
+export function simulatePlan(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra & { maxTurns: number; roll: number }): SimResult | null {
+  const total = countTotal(quest);
+  if (!total) return null;
+  const start = initState(front, quest, rel, opt);
+  setLabels(front);
+  loadWave(start);
+  const waves = quest.waves.length, bars = countBars(quest);
+  let budget = PLAN_BUDGET;
+  const note = { spared: false };
+  const go = (s: State, turn: number, limit: number, log: TurnLog[], pol: boolean): SimResult | null => {
+    const head: TurnLog = { turn, wave: s.wave + 1, skills: [], nps: [] };
+    let base = s;
+    if (s.master && s.bench.length && s.actors.some((a) => a.cfg.swapOut)) { base = cloneState(s); orderChange(base, head); }
+    // 이번 턴에 웨이브를 끝내지 못해도 남은 턴으로 나머지 웨이브를 돌 수 있는가
+    const slack = limit - turn >= waves - base.wave;
+    const lastWave = base.wave >= waves - 1;
+    const cand = base.actors.map((_, i) => i).filter((i) => hasUsableNp(base.actors[i]) && reachable(base, base.actors[i]));
+    const isDmg = (i: number) => base.actors[i].cfg.svt.np!.dmg;
+    const subsets: number[][] = [];
+    for (let m = 1; m < 1 << cand.length; m++) {
+      const sub = cand.filter((_, k) => m & (1 << k));
+      if (sub.some(isDmg) || slack) subsets.push(sub);
+    }
+    // 보구를 적게 쓰는 조합부터. 마지막 웨이브가 아니면 주 딜러를 아끼는 조합을 먼저 본다.
+    const mainIn = (sub: number[]) => Number(sub.some((i) => base.actors[i].cfg.main));
+    subsets.sort((x, y) => x.length - y.length || (lastWave ? mainIn(y) - mainIn(x) : mainIn(x) - mainIn(y)));
+    if (slack) subsets.push([]); // 보구 없이 턴을 넘긴다(쿨타임·평타 NP를 기다린다)
+    const allIn = lastWave && !slack;
+    for (const sub of subsets) {
+      const actors = fireOrder(sub.map((i) => base.actors[i]));
+      const idx = actors.map((a) => base.actors.indexOf(a));
+      const charge = idx.length === 1 ? idx : chargeOrder(base, idx);
+      if (!charge) continue;
+      // 첫 턴에서 운용 방침을 정한다: 버프를 아끼는 쪽을 먼저 보고, 실제로 아낀 버프가 있었을 때만 몰아 쓰는 쪽도 본다
+      // (아낀 적이 없으면 두 방침이 같은 스킬을 쓰므로 다시 볼 필요가 없다)
+      if (turn === 1) note.spared = false;
+      for (const p of turn === 1 ? [false, true] : [pol]) {
+        if (turn === 1 && p && !note.spared) break;
+        const eager = p && sub.some(isDmg);
+        if (--budget < 0) return null;
+        const c = cloneState(base);
+        const entry: TurnLog = { ...head, skills: head.skills.slice(), nps: [], events: head.events?.slice() };
+        if (!playPlan(c, idx, charge, eager, allIn, entry, note)) continue;
+        const next = [...log, entry];
+        if (endTurn(c)) return { cleared: true, turns: turn, killed: c.killed, total, log: next, broken: c.broken, bars };
+        if (limit - turn < waves - c.wave) continue;
+        const r = go(c, turn + 1, limit, next, p);
+        if (r || budget < 0) return r;
+      }
+    }
+    return null;
+  };
+  const first = Math.min(opt.maxTurns, waves);
+  for (const limit of opt.maxTurns > first ? [first, opt.maxTurns] : [first]) {
+    const r = go(start, 1, limit, [], false);
+    if (r || budget < 0) return r;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- NP 수급 상한
+// 대부분의 편성은 NP가 모자라 실패한다. 평타가 없으므로 HP 게이지 한 줄마다 대미지 보구가 적어도 한 번 필요하고,
+// 보구 한 번에는 NP 100%가 든다. 전투 내내 얻을 수 있는 NP를 넉넉하게 잡아도 필요량에 못 미치면 시뮬레이션 없이 버린다.
+
+/** 레벨에 맞는 수치 중 오버차지 단계를 통틀어 가장 큰 Value */
+const maxValue = (fn: Fn, lvIdx: number): number => {
+  let v = 0;
+  for (let oc = 1; oc <= (fn.oc ? 5 : 1); oc++) { const sv = svAt(fn, lvIdx, oc); if (sv.Rate === undefined || sv.Rate >= 1000) v = Math.max(v, sv.Value ?? 0); }
+  return v;
+};
+/** 상한을 잡을 수 없는 충전 방식(상태 수 비례, 배율, 흡수) */
+const WILD_CHARGE = new Set(['gainNpBuffIndividualSum', 'gainNpIndividualSum', 'gainNpTargetSum', 'gainMultiplyNp', 'absorbNp']);
+const questNeed = new WeakMap<QuestData, { need: number; td3: number; td1: number }>();
+
+/**
+ * 이 편성이 얻을 수 있는 NP의 상한이 필요량에 닿는가. false면 어떤 운용으로도 클리어할 수 없다.
+ * 필요량: 웨이브마다 가장 긴 HP 게이지 줄 수만큼의 대미지 보구 × 100%.
+ * 공급 상한: 대미지 보구를 가진 서번트들의 시작 NP + 평타 NP 가정 + 모든 충전 스킬·보구 효과·턴 종료 충전 + 보구 NP 회수.
+ * NP 회수는 모든 카드 버프·NP 획득량 버프가 걸리고 모든 히트가 오버킬인 것으로 본다.
+ */
+export function npSupplyOk(front: ActorCfg[], quest: QuestData, maxTurns: number, extra: SimExtra = {}): boolean {
+  let q = questNeed.get(quest);
+  if (!q) {
+    let need = 0, td3 = 0, td1 = 0;
+    quest.waves.forEach((w, i) => {
+      need += w.reduce((m, e) => Math.max(m, e.bars.length), 0);
+      const tds: number[] = [];
+      const scan = (e: EnemyDef) => { tds.push(e.tdRate); for (const c of e.call ?? []) scan(c); };
+      for (const e of w) scan(e);
+      for (const e of quest.waveCalls?.[i] ?? []) scan(e);
+      tds.sort((a, b) => b - a);
+      td3 = Math.max(td3, (tds[0] ?? 0) + (tds[1] ?? 0) + (tds[2] ?? 0));
+      td1 = Math.max(td1, tds[0] ?? 0);
+    });
+    questNeed.set(quest, (q = { need, td3, td1 }));
+  }
+  if (q.need <= 0) return true;
+  return npSupplyBy(front, q, maxTurns, q.need, extra);
+}
+/** T턴째까지 대미지 보구를 합쳐 N번 쏠 수 있는가(상한) */
+function npSupplyBy(front: ActorCfg[], q: { td3: number; td1: number }, T: number, N: number, extra: SimExtra): boolean {
+  const users = front.filter((c) => c.svt.np?.dmg);
+  if (!users.length) return false;
+  const master: Skill[] = [...(extra.mc ?? []), ...(extra.commandSpell ? [COMMAND_SPELL] : [])];
+  // 쿨타임 단축: 단축 효과가 쓰이는 횟수와 그 덕에 줄어든 쿨타임이 서로 물려 있으므로, 한 번씩 쓴 데서 시작해 더 늘지 않을 때까지 되풀이한다.
+  // 줄어드는 턴 수(cut)는 대상과 무관하게 모든 스킬이 전부 받는다고 본다.
+  const cdOf = (sk: Skill, lv: number, reload: boolean) => sk.cd[Math.min(lv, sk.cd.length) - 1] - (reload ? 1 : 0);
+  const usesOf = (cd: number, cut: number) => 1 + Math.floor((T - 1) / Math.max(1, cd - cut));
+  const cutters: { v: number; cd: number }[] = []; // cd 0 = 보구(매 턴)
+  const cutOf = (fns: Fn[], lvIdx: number) => fns.reduce((n, f) => n + (f.t === 'shortenSkill' ? maxValue(f, lvIdx) : 0), 0);
+  for (const c of front) {
+    c.svt.skills.forEach((sk, k) => { const lv = c.skillLvs?.[k] ?? c.skillLv; const v = cutOf(sk.fn, lv - 1); if (v) cutters.push({ v, cd: cdOf(sk, lv, (c.reload ?? 0) > 0) }); });
+    const v = cutOf(c.svt.np?.fn ?? [], c.npLv - 1);
+    if (v) cutters.push({ v, cd: 0 });
+  }
+  for (const sk of master) { const v = cutOf(sk.fn, 9); if (v) cutters.push({ v, cd: cdOf(sk, 10, false) }); }
+  let cut = 0;
+  for (;;) {
+    const next = cutters.reduce((n, x) => n + x.v * (x.cd ? usesOf(x.cd, cut) : T), 0);
+    if (next <= cut) break;
+    cut = next;
+  }
+  // 서번트별로 받는 NP(base)와, 대상을 골라 주는 NP(pick: 누구에게 줄지는 아래에서 가장 유리하게 나눈다)
+  const base = new Map<ActorCfg, number>(users.map((c) => [c, c.startNp + (extra.cardNp ?? 0) * Math.max(0, T - 1)]));
+  let pick = 0;
+  // NP 회수에 걸리는 버프: 카드 위력(카드 종류 조건), NP 획득량. self는 자신에게만 거는 버프의 주인.
+  const cardBuffs: { v: number; cs?: number[]; self: ActorCfg | null }[] = [];
+  const gainBuffs: { v: number; self: ActorCfg | null }[] = [];
+  let wild = false;
+  const give = (tg: string, user: ActorCfg | null, amount: number) => {
+    if (tg === 'ptOne' || tg === 'ptSelfAnotherFirst') pick += amount;
+    else for (const c of users) {
+      if (tg === 'self' ? c === user : tg === 'ptAll' || tg === 'ptFull' ? true : tg === 'ptOther' || tg === 'ptOtherFull' ? c !== user : false) base.set(c, base.get(c)! + amount);
+    }
+  };
+  /** uses: 전투 중 이 효과가 발동할 수 있는 횟수 */
+  const take = (fn: Fn, lvIdx: number, user: ActorCfg | null, uses: number) => {
+    if (WILD_CHARGE.has(fn.t)) { wild = true; return; }
+    const v = maxValue(fn, lvIdx);
+    if (!v) return;
+    if (fn.t === 'gainNp') { give(fn.tg, user, v * uses); return; }
+    for (const d of fn.b ?? []) {
+      if (d.t === 'regainNp') give(fn.tg, user, v * Math.max(0, T - 1) * uses);
+      else if (d.t === 'turnEnd') { for (const fx of d.te ?? []) if (fx.t === 'gainNp') give(fn.tg, user, (fx.v ?? 0) * Math.max(0, T - 1) * uses); }
+      else if (d.t === 'upCommandall') cardBuffs.push({ v: (v / 1000) * uses, cs: d.cs, self: fn.tg === 'self' ? user : null });
+      else if (d.t === 'downDefencecommandall') cardBuffs.push({ v: (v / 1000) * uses, self: null });
+      else if (d.t === 'upDropnp') gainBuffs.push({ v: (v / 1000) * uses, self: fn.tg === 'self' ? user : null });
+    }
+  };
+  for (const c of front) {
+    c.svt.skills.forEach((sk, k) => {
+      const lv = c.skillLvs?.[k] ?? c.skillLv;
+      const uses = usesOf(cdOf(sk, lv, (c.reload ?? 0) > 0), cut);
+      for (const fn of sk.fn) take(fn, lv - 1, c, uses);
+    });
+    for (const fn of c.svt.np?.fn ?? []) if (!fn.t.startsWith('damageNp')) take(fn, c.npLv - 1, c, T);
+    for (const fn of c.svt.passive) take(fn, 0, c, 1);
+  }
+  for (const sk of master) {
+    const uses = usesOf(cdOf(sk, 10, false), cut);
+    for (const fn of sk.fn) take(fn, 9, null, uses);
+  }
+  if (wild) return true;
+  // dp[n]: 보구를 합쳐 n번(N 이상은 N으로) 쏘는 데 필요한, 대상을 골라 주는 NP의 최소량
+  let dp = new Array<number>(N + 1).fill(Infinity);
+  dp[0] = 0;
+  for (const c of users) {
+    const np = c.svt.np!;
+    // 보구 한 번의 NP 회수 상한: 걸릴 수 있는 버프가 모두 걸리고 모든 히트가 오버킬
+    let card = 0, gain = 0;
+    const sc = (c.friend ? extra.friendScore : extra.score)?.[c.svt.cls];
+    if (sc) card += (sc[SCORE_CARD.indexOf(CARD_TRAIT[np.card])] ?? 0) / 1000;
+    for (const b of cardBuffs) {
+      if (b.self && b.self !== c) continue;
+      const ids = b.cs?.filter(isCardTrait) ?? [];
+      if (!ids.length || ids.includes(CARD_TRAIT[np.card]) || ids.includes(NP_CARD_TRAIT)) card += b.v;
+    }
+    for (const b of gainBuffs) if (!b.self || b.self === c) gain += b.v;
+    const aoe = np.fn.some((f) => f.t.startsWith('damageNp') && f.tg === 'enemyAll');
+    const shots = np.fn.filter((f) => f.t.startsWith('damageNp')).length;
+    const refund = np.gain * CARD_NP[np.card] * (1 + card) * (1 + gain) * 1.5 * np.dist.length * shots * ((aoe ? q.td3 : q.td1) / 1000);
+    if (refund >= 10000) return true; // 쏠 때마다 다시 찬다
+    const b0 = base.get(c)!;
+    const next = dp.slice();
+    // 한 서번트는 한 턴에 보구를 한 번만 쏜다
+    for (let k = 1; k <= Math.min(N, T); k++) {
+      // k번 쏘려면 100% × k가 들고, 마지막을 뺀 k-1번의 회수를 돌려받는다
+      const cost = Math.max(0, 10000 * k - (k - 1) * refund - b0);
+      for (let n = 0; n <= N; n++) if (dp[n] + cost < next[Math.min(N, n + k)]) next[Math.min(N, n + k)] = dp[n] + cost;
+    }
+    dp = next;
+  }
+  return dp[N] <= pick;
+}
+
+/** 정해진 운용 방침을 차례로 돌려 더 나은 결과를 고르고, 그래도 안 되면 보구 계획을 탐색한다. */
 export function simulateBest(front: ActorCfg[], quest: QuestData, rel: Rel, maxTurns: number, roll: number, extra: SimExtra = {}): SimResult {
+  // NP가 모자라 어떤 운용으로도 안 되는 편성은 시뮬레이션하지 않는다(기록이 빈 실패 결과를 돌려준다)
+  if (extra.prune !== false && !npSupplyOk(front, quest, maxTurns, extra)) {
+    return { cleared: false, turns: maxTurns, killed: 0, total: countTotal(quest), log: [], broken: 0, bars: countBars(quest) };
+  }
   const a = simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'lazy' });
   if (a.cleared && a.turns <= quest.waves.length) return a;
   const b = simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'eager' });
@@ -670,6 +1081,10 @@ export function simulateBest(front: ActorCfg[], quest: QuestData, rel: Rel, maxT
   // 웨이브 분담: 주 딜러가 정해져 있고 보구를 쏠 수 있는 서번트가 둘 이상이며 웨이브가 여럿일 때
   if (!(best.cleared && best.turns <= quest.waves.length) && quest.waves.length > 1 && front.some((f) => f.main) && front.filter((f) => f.role === 'dealer').length > 1) {
     best = better(best, simulate(front, quest, rel, { ...extra, maxTurns, roll, mode: 'relay' }));
+  }
+  if (extra.plan !== false && !(best.cleared && best.turns <= quest.waves.length)) {
+    const p = simulatePlan(front, quest, rel, { ...extra, maxTurns, roll });
+    if (p) best = better(best, p);
   }
   return best;
 }

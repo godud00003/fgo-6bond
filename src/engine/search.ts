@@ -35,6 +35,13 @@ export interface Settings {
   cardNp?: number;
   /** 령주 1획(NP +100%)을 쓰는 편성도 찾는다. 령주 없이 되는 편성은 령주를 쓰지 않는다. */
   commandSpell?: boolean;
+  /**
+   * 보구 계획 탐색(기본 켬): 정해진 운용으로 안 되는 편성은 턴마다 누가 보구를 쏠지 바꿔 가며 찾는다.
+   * 서포터의 보구(버프·디버프 보구 포함)와 한 턴에 보구 여러 개를 쏘는 경우가 여기에 들어간다. 끄면 빨라진다.
+   */
+  npPlan?: boolean;
+  /** false면 NP 수급 상한으로 미리 걸러 내지 않는다(검증용) */
+  prune?: boolean;
   /** 클래스 스코어(내 서번트 / 프렌드) */
   score?: ClassScore; friendScore?: ClassScore;
   /** 프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성을 허용한다(기본 허용) */
@@ -82,14 +89,50 @@ interface Core {
   bench: Set<number>; friendBench: boolean; swapOut?: number;
   /** 전열의 자리 순서(도감 번호, 프렌드는 'f'). 진궁의 제물처럼 위치가 의미 있는 편성이 있다. */
   seq: string[];
+  /** 탐색 단위 번호: 여러 워커가 나눠 찾은 결과를 한 번에 찾았을 때와 같은 순서로 합치는 데 쓴다 */
+  u: number;
 }
+
+/** 탐색을 여러 워커가 나눠 맡을 때의 몫: 탐색 단위(딜러, 딜러 쌍 등)를 번호순으로 count개 중 index번째만 맡는다 */
+export interface Shard { index: number; count: number }
+/** 워커 사이에 주고받는 코어: 서번트·마술예장은 번호로만 싣는다 */
+interface PackedCore {
+  own: number[]; friend: number | null; friendRole?: 'dealer' | 'support'; roles: [number, 'dealer' | 'support'][]; sim: SimResult;
+  mc: number | null; cs?: boolean; bench: number[]; friendBench: boolean; swapOut?: number; seq: string[]; u: number;
+}
+/** 클리어되는 편성을 찾는 단계의 결과(한 워커의 몫) */
+export interface CorePart {
+  cores: PackedCore[]; coresAtk: PackedCore[]; simulated: number;
+  bestFail: { names: string[]; sim: SimResult; u: number } | null;
+  autoMc?: string | null;
+  /** 오더 체인지를 켰지만 쓸 수 있는 마술예장이 없었다 */
+  noOc: boolean;
+}
+const pack = (c: Core): PackedCore => ({
+  own: c.own.map((p) => p.svt.no), friend: c.friend?.no ?? null, friendRole: c.friendRole, roles: [...c.roles], sim: c.sim,
+  mc: c.mc?.id ?? null, cs: c.cs, bench: [...c.bench], friendBench: c.friendBench, swapOut: c.swapOut, seq: c.seq, u: c.u,
+});
 
 const condMatch = (cond: number[][], traits: number[]) => !cond.length || cond.some((g) => g.every((t) => traits.includes(t)));
 
+/** 한 번에 전부 계산한다(워커를 나누지 않을 때). */
 export function search(
   pool: PoolEntry[], all: Servant[], stock: CEStock[], quest: QuestData, rel: Rel, st: Settings,
   onProgress?: (done: number, total: number) => void,
 ): SearchOutput {
+  return finishSearch([findCores(pool, all, stock, quest, rel, st, onProgress)], pool, all, stock, quest, st);
+}
+
+/** 보유 인연 예장 중 ATK가 가장 높은 것(주 딜러에게 끼운다고 본다) */
+const ceAtkOf = (s: CEStock) => s.atk ?? s.ce.atk;
+const bestAtkStock = (stock: CEStock[]) => stock.filter((s) => s.count > 0 && ceAtkOf(s) > 0)
+  .sort((a, b) => ceAtkOf(b) - ceAtkOf(a) || b.ce.val[b.mlb ? 1 : 0] - a.ce.val[a.mlb ? 1 : 0])[0] ?? null;
+
+/** 1단계: 클리어되는 편성(코어)을 찾는다. shard를 주면 그 몫만 계산한다. */
+export function findCores(
+  pool: PoolEntry[], all: Servant[], stock: CEStock[], quest: QuestData, rel: Rel, st: Settings,
+  onProgress?: (done: number, total: number) => void, shard?: Shard,
+): CorePart {
   const byNo = new Map(pool.map((p) => [p.svt.no, p]));
   const allByNo = new Map(all.map((s) => [s.no, s]));
   const cfg = (p: PoolEntry, role: 'dealer' | 'support', plusAtk = 0): ActorCfg =>
@@ -98,16 +141,16 @@ export function search(
     ({ svt: s, npLv: 1, skillLv: 10, atk: (st.lv1 ? s.atk[1] : s.atk.max) + 1000, startNp: (st.friendAppendNp ?? st.startNp) + (st.friendStartNp ?? 0), reload: st.friendReload ?? st.reload ?? 0, role, friend: true });
   // 예장 ATK: 보유한 인연 예장 중 ATK가 가장 높은 것을 주 딜러에게 끼운다고 본다.
   // 예장 없이도 클리어되는 편성은 그대로 두고, 안 되는 편성만 이 예장을 낀 조건으로 다시 계산한다.
-  const ceAtkOf = (s: CEStock) => s.atk ?? s.ce.atk;
-  const atkStock = stock.filter((s) => s.count > 0 && ceAtkOf(s) > 0)
-    .sort((a, b) => ceAtkOf(b) - ceAtkOf(a) || b.ce.val[b.mlb ? 1 : 0] - a.ce.val[a.mlb ? 1 : 0])[0] ?? null;
+  const atkStock = bestAtkStock(stock);
   const plusAtk = atkStock ? ceAtkOf(atkStock) : 0;
   const allowDup = st.allowDup !== false;
   let simulated = 0;
   let useCs = false; // 지금 계산에서 령주를 쓸 수 있는가(령주 없이 안 될 때만 켠다)
-  const run = (lineup: ActorCfg[], mc: MysticCode | null) => {
+  let usePlan = st.npPlan !== false; // 지금 계산에서 보구 계획 탐색을 하는가
+  // score: 클리어 여부가 아니라 준 대미지로 점수를 매기는 계산. 실패하더라도 어디까지 갔는지가 필요하므로 미리 걸러 내지 않는다.
+  const run = (lineup: ActorCfg[], mc: MysticCode | null, score = false) => {
     simulated++;
-    return simulateBest(lineup, quest, rel, st.maxTurns, st.roll, { mc: mc?.skills, cardNp: st.cardNp, commandSpell: useCs, score: st.score, friendScore: st.friendScore });
+    return simulateBest(lineup, quest, rel, st.maxTurns, st.roll, { mc: mc?.skills, cardNp: st.cardNp, commandSpell: useCs, score: st.score, friendScore: st.friendScore, plan: usePlan, prune: score ? false : st.prune });
   };
   const dmgOf = (s: SimResult) => s.log.reduce((n, t) => n + t.nps.reduce((m, x) => m + x.hits.reduce((k, h) => k + Math.min(h.dmg, h.hp), 0), 0), 0);
 
@@ -121,7 +164,7 @@ export function search(
   // ---- 마술예장 후보
   // 지정: 그 예장만. 자동: 예장 없이 먼저 해 보고, 안 되면 이 퀘스트에서 가장 도움이 되는 예장을 쓴다.
   const hasOc = (m: MysticCode) => m.skills.some((k) => k.fn.some((f) => f.t === 'replaceMember'));
-  const solo = dealers.map((d) => ({ d, sim: run([cfg(d, 'dealer')], st.mc ?? null) }));
+  const solo = dealers.map((d) => ({ d, sim: run([cfg(d, 'dealer')], st.mc ?? null, true) }));
   const topD = solo.map((x) => ({ d: x.d, score: dmgOf(x.sim) })).sort((a, b) => b.score - a.score).map((x) => x.d);
   let mcList: (MysticCode | null)[] = [st.mc ?? null];
   if (st.mcAuto?.length) {
@@ -132,7 +175,7 @@ export function search(
     for (const m of st.mcAuto) {
       if (!m.skills.some((k) => k.fn.some((f) => f.t !== 'replaceMember'))) continue;
       let score = 0;
-      for (const lu of samples) { const r = run(lu, m); score += r.cleared ? 100000 - r.turns * 1000 : r.broken * 100 + dmgOf(r) / 1e6; }
+      for (const lu of samples) { const r = run(lu, m, true); score += r.cleared ? 100000 - r.turns * 1000 : r.broken * 100 + dmgOf(r) / 1e6; }
       if (score > bestScore) { bestScore = score; best = m; }
     }
     // NP가 조금 모자라 못 쏘는 편성이 많으므로 NP 충전 예장도 후보에 둔다:
@@ -154,8 +197,12 @@ export function search(
 
   const cores: Core[] = [];
   const coresAtk: Core[] = [];
-  let bestFail: SearchOutput['bestFail'] = null;
-  const noteFail = (names: string[], sim: SimResult) => { if (!bestFail || sim.broken > bestFail.sim.broken) bestFail = { names, sim }; };
+  let bestFail: CorePart['bestFail'] = null;
+  // 시뮬레이션 없이 걸러진 편성(기록이 비어 있다)은 '가장 근접한 실패'로 치지 않는다
+  const noteFail = (names: string[], sim: SimResult) => { if (!sim.log.length) return; if (!bestFail || sim.broken > bestFail.sim.broken) bestFail = { names, sim, u: unit }; };
+  // 탐색 단위마다 번호를 매기고, 나눠 맡을 때는 자기 몫만 계산한다
+  let unit = -1;
+  const mine = () => { unit++; return !shard || unit % shard.count === shard.index; };
 
   /** 편성의 한 자리. no는 도감 번호. */
   interface Slot {
@@ -233,6 +280,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
         bench: new Set(own.filter((s) => s.bench).map((s) => s.no)), friendBench: f >= 0 && !!slots[f].bench,
         swapOut: slots.find((s) => s.swapOut)?.no,
         seq: slots.map((s, i) => ({ s, i })).filter((x) => !x.s.bench).map((x) => (x.i === f ? 'f' : String(x.s.no))),
+        u: unit,
       });
     };
     // 프렌드가 내 서번트와 조건이 다르면(시작 NP 예장) 프렌드 자리마다 따로 계산한다.
@@ -250,10 +298,11 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
   const sup = (no: number, o: Partial<Slot> = {}): Slot => ({ no, role: 'support', ...o });
   const deal = (d: PoolEntry, o: Partial<Slot> = {}): Slot => ({ no: d.svt.no, role: 'dealer', ...o });
 
-  const total = dealers.length * combos.length;
+  const total = dealers.filter((_, i) => !shard || i % shard.count === shard.index).length * combos.length;
   let done = 0;
   let plain = 0; // 딜러 1기 + 서포터 편성으로 예장 ATK 없이 클리어된 수
   for (const d of dealers) {
+    if (!mine()) continue;
     const okSingles = new Set<number>();
     let soloOk = false;
     for (const combo of combos) {
@@ -263,7 +312,11 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
       let got = tryLineup([deal(d, { boost: true }), ...combo.map((n) => sup(n))], mcList);
       // 안 되면 서포터도 보구를 쏘는 운용: 서포터가 앞 웨이브를 맡고 딜러는 마지막 웨이브에 집중한다
       if (!got && quest.waves.length > 1 && combo.some((n) => allByNo.get(n)?.np?.dmg)) {
+        // 보구 계획 탐색은 역할과 무관하게 같은 조합을 보므로 위에서 이미 했다: 여기서는 웨이브 분담 운용만 본다
+        const keep = usePlan;
+        usePlan = false;
         got = tryLineup([deal(d, { boost: true }), ...combo.map((n): Slot => (allByNo.get(n)?.np?.dmg ? { no: n, role: 'dealer', sub: true } : sup(n)))], mcList);
+        usePlan = keep;
       }
       if (got) {
         if (got === 1) plain++;
@@ -283,7 +336,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
   if (dealers.length > 1) {
     const lastQuest: QuestData = { ...quest, waves: [quest.waves[quest.waves.length - 1]], waveCalls: undefined };
     const finishers = dealers
-      .map((d) => ({ d, score: dmgOf(simulateBest([{ ...cfg(d, 'dealer'), startNp: 10000 }], lastQuest, rel, 1, st.roll, { cardNp: st.cardNp, score: st.score })) }))
+      .map((d) => ({ d, score: dmgOf(simulateBest([{ ...cfg(d, 'dealer'), startNp: 10000 }], lastQuest, rel, 1, st.roll, { cardNp: st.cardNp, score: st.score, prune: false })) }))
       .sort((a, b) => b.score - a.score).slice(0, 8).map((x) => x.d);
     for (const d of finishers) if (!top.includes(d)) top.push(d);
   }
@@ -293,13 +346,14 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
   if (dealers.length > 1) {
     const single = combos.filter((c) => c.length <= 1);
     for (let i = 0; i < top.length; i++) for (let j = i + 1; j < top.length; j++) {
+      if (!mine()) continue;
       for (const c of single) if (tryLineup([deal(top[i], { boost: true }), deal(top[j]), ...c.map((n) => sup(n))], mcList) && c.length === 0) break;
     }
     // 같은 딜러 2기(내 것 + 프렌드)에 다른 딜러 1기를 더한 편성
-    if (allowDup) for (const d of top) for (const d2 of top) if (d2 !== d) tryLineup([deal(d, { boost: true }), deal(d, { friendOnly: true }), deal(d2)], mcList);
+    if (allowDup) for (const d of top) if (mine()) for (const d2 of top) if (d2 !== d) tryLineup([deal(d, { boost: true }), deal(d, { friendOnly: true }), deal(d2)], mcList);
     // 내 딜러 3기
     const t3 = top.slice(0, 12);
-    for (let i = 0; i < t3.length; i++) for (let j = i + 1; j < t3.length; j++) for (let k = j + 1; k < t3.length; k++) {
+    for (let i = 0; i < t3.length; i++) for (let j = i + 1; j < t3.length; j++) if (mine()) for (let k = j + 1; k < t3.length; k++) {
       tryLineup([deal(t3[i], { boost: true }), deal(t3[j]), deal(t3[k])], mcList);
     }
   }
@@ -310,7 +364,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
   // 보구를 쓰면 퇴장하는 서번트(아라쉬, 진궁 등): 퇴장한 자리에 후열 선두가 들어와 오더 체인지와 비슷한 효과를 낸다
   for (const x of dealers.filter((p) => p.svt.np?.dies)) {
     for (const d of subD) {
-      if (d === x) continue;
+      if (d === x || !mine()) continue;
       for (const s1 of optSup) for (const s2 of optSup) {
         if (x.svt.np!.dies === 'ally') {
           // 진궁: 선두의 다른 아군(스킬을 다 쓴 서포터)을 제물로 쓴다
@@ -327,12 +381,36 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
   // 오더 체인지: 서포터 하나의 스킬을 다 쓰고 후열의 다른 서포터와 바꾼다
   if (ocMc) {
     for (const d of subD) {
-      for (const s1 of optSup) for (const s2 of supports) for (const s3 of supports) {
+      for (const s1 of optSup) if (mine()) for (const s2 of supports) for (const s3 of supports) {
         tryLineup([deal(d, { boost: true }), ...(s1 === null ? [] : [sup(s1)]), sup(s2, { swapOut: true }), sup(s3, { bench: true })], [ocMc]);
       }
       onProgress?.(done, total);
     }
   }
+
+  return {
+    cores: cores.map(pack), coresAtk: coresAtk.map(pack), simulated, bestFail, noOc: !!st.orderChange && !ocMc,
+    autoMc: st.mcAuto?.length ? (mcList.slice(1).map((m) => m!.name.replace(/^마술예장 /, '')).join(', ') || null) : undefined,
+  };
+}
+
+/** 2단계: 찾은 코어(여러 워커의 몫을 합친 것) 위에서 인연을 최적화해 결과를 만든다. */
+export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[], stock: CEStock[], quest: QuestData, st: Settings): SearchOutput {
+  const byNo = new Map(pool.map((p) => [p.svt.no, p]));
+  const allByNo = new Map(all.map((s) => [s.no, s]));
+  const mcById = new Map([st.mc, ...(st.mcAuto ?? [])].filter((m): m is MysticCode => !!m).map((m) => [m.id, m]));
+  const atkStock = bestAtkStock(stock);
+  const unpack = (c: PackedCore): Core => ({
+    own: c.own.map((n) => byNo.get(n)!), friend: c.friend === null ? null : allByNo.get(c.friend)!, friendRole: c.friendRole, roles: new Map(c.roles), sim: c.sim,
+    mc: c.mc === null ? null : mcById.get(c.mc) ?? null, cs: c.cs, bench: new Set(c.bench), friendBench: c.friendBench, swapOut: c.swapOut, seq: c.seq, u: c.u,
+  });
+  // 단위 번호순으로 합치면 한 번에 찾았을 때와 순서가 같다(같은 단위 안의 순서는 그대로 둔다)
+  const merge = (pick: (p: CorePart) => PackedCore[]) => parts.flatMap(pick).map(unpack).sort((a, b) => a.u - b.u);
+  const cores = merge((p) => p.cores), coresAtk = merge((p) => p.coresAtk);
+  const simulated = parts.reduce((n, p) => n + p.simulated, 0);
+  let bestFail: CorePart['bestFail'] = null;
+  for (const p of parts) if (p.bestFail && (!bestFail || p.bestFail.sim.broken > bestFail.sim.broken || (p.bestFail.sim.broken === bestFail.sim.broken && p.bestFail.u < bestFail.u))) bestFail = p.bestFail;
+  const noOc = parts.some((p) => p.noOc);
 
   /** 클리어되는 편성들 위에서 인연을 최적화한다. 프렌드 예장은 전투에 영향이 없으므로 여기서만 바뀐다. */
   const rank = (s2: Settings): PartyResult[] => {
@@ -375,8 +453,9 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
       ? `필수 포함 서번트가 서번트 풀에 없습니다: ${missing.join(', ')}. 보유 서번트만 쓰는 중이라면 "내 서번트"에 등록되어 있는지 확인하세요.`
       : '클리어되는 조합은 있지만, 필수 포함 서번트를 모두 넣으면 자리(내 서번트 5기)나 코스트가 모자랍니다.';
   }
-  if (st.orderChange && !ocMc) note = [note, '오더 체인지를 켰지만 고른 마술예장에 오더 체인지가 없어 쓰지 않았습니다. 마술예장을 자동 선택으로 두거나 전투복·결전용 제복을 고르세요.'].filter(Boolean).join(' ');
-  return { results, simulated, feasible, bestFail: feasible ? null : bestFail, note, autoFriendCe, autoMc: st.mcAuto?.length ? (mcList.slice(1).map((m) => m!.name.replace(/^마술예장 /, '')).join(', ') || null) : undefined };
+  if (noOc) note = [note, '오더 체인지를 켰지만 고른 마술예장에 오더 체인지가 없어 쓰지 않았습니다. 마술예장을 자동 선택으로 두거나 전투복·결전용 제복을 고르세요.'].filter(Boolean).join(' ');
+  const fail = bestFail as CorePart['bestFail'];
+  return { results, simulated, feasible, bestFail: feasible || !fail ? null : { names: fail.names, sim: fail.sim }, note, autoFriendCe, autoMc: parts[0]?.autoMc };
 }
 
 // ---------------------------------------------------------------- 인연 포인트 최적화

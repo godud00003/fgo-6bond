@@ -4,7 +4,7 @@ import SearchWorker from './worker.ts?worker&inline';
 import UpdateWorker from './update.worker.ts?worker&inline';
 import { latestKr, loadCached, saveCached, type Dataset } from './update.ts';
 import { fetchQuest, namuQuery, resolveQuest, type Candidate } from './engine/quest.ts';
-import type { CEStock, PartyResult, PoolEntry, SearchOutput, Settings } from './engine/search.ts';
+import type { CEStock, CorePart, PartyResult, PoolEntry, SearchOutput, Settings } from './engine/search.ts';
 import type { BondCE, MysticCode, QuestData, Rel, Servant, War } from './engine/types.ts';
 
 type Data = Dataset;
@@ -12,12 +12,12 @@ import { boardScore, importLogin, type Roster, type RosterEntry, type Stock } fr
 
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fAppend2: boolean; fAppend5: boolean; fou: number;
-  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; cs: boolean; autoUpdate: boolean;
+  friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; cs: boolean; npPlan: boolean; autoUpdate: boolean;
   /** 클래스 스코어: 내 것(없음 / 전부 개방 / 가져온 데이터), 프렌드 것, 가져온 판별 수치 */
   score: 'none' | 'full' | 'own'; fScore: 'none' | 'full'; scoreOwn?: Record<number, number[]>;
 }
 const DEFAULT_PREFS: Prefs = {
-  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false, cs: false, autoUpdate: true, score: 'none', fScore: 'none',
+  poolMode: 'all', maxTurns: 3, costCap: 112, roll: 0.9, append2: true, append5: true, fAppend2: true, fAppend5: true, fou: 1000, friendCe: '', np5: 1, np4: 2, np3: 5, teapot: 1, mc: -1, cardNp: 0, lv1: false, allowDup: true, must: [], oc: false, cs: false, npPlan: true, autoUpdate: true, score: 'none', fScore: 'none',
 };
 
 const CLASS_KO: Record<string, string> = {
@@ -180,7 +180,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
   const [err, setErr] = useState('');
   const [progress, setProgress] = useState<number | null>(null);
   const [output, setOutput] = useState<SearchOutput | null>(null);
-  const worker = useRef<Worker | null>(null);
+  const workers = useRef<Worker[]>([]);
+  const stopWorkers = () => { for (const w of workers.current) w.terminate(); workers.current = []; };
   const set = <K extends keyof Prefs>(k: K, v: Prefs[K]) => setPrefs((p) => ({ ...p, [k]: v }));
 
   const pick = async (c: Candidate) => {
@@ -201,15 +202,27 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
 
   const run = () => {
     if (!quest) return;
-    worker.current?.terminate();
-    const w = new SearchWorker();
-    worker.current = w;
+    stopWorkers();
+    // 편성 찾기는 워커 여러 개가 나눠 맡고(코어 수 - 1, 최대 8), 다 끝나면 한 워커가 합쳐서 인연을 최적화한다
+    const count = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 1));
+    const ws = Array.from({ length: count }, () => new SearchWorker());
+    workers.current = ws;
     setProgress(0); setOutput(null); setErr('');
-    w.onmessage = (ev) => {
-      if (ev.data.type === 'progress') setProgress(ev.data.done / ev.data.total);
-      else if (ev.data.type === 'done') { setOutput(ev.data.output); setProgress(null); w.terminate(); }
-      else { setErr(ev.data.message); setProgress(null); w.terminate(); }
-    };
+    const prog = ws.map(() => [0, 1]);
+    const parts: CorePart[] = [];
+    ws.forEach((w, index) => {
+      w.onmessage = (ev) => {
+        if (workers.current !== ws) return; // 새 계산이 시작됐다
+        if (ev.data.type === 'progress') {
+          prog[index] = [ev.data.done, ev.data.total];
+          setProgress(prog.reduce((n, p) => n + p[0], 0) / Math.max(1, prog.reduce((n, p) => n + p[1], 0)));
+        } else if (ev.data.type === 'cores') {
+          parts.push(ev.data.part);
+          if (parts.length === count) ws[0].postMessage({ type: 'finish', parts });
+        } else if (ev.data.type === 'done') { setOutput(ev.data.output); setProgress(null); stopWorkers(); }
+        else { setErr(ev.data.message); setProgress(null); stopWorkers(); }
+      };
+    });
     const ceStock: CEStock[] = data.ces.map((ce) => ({ ce, count: stock[ce.no]?.count ?? 1, mlb: stock[ce.no]?.mlb ?? true, atk: stock[ce.no]?.atk ?? ce.atk }));
     const [fNo, fMlb] = prefs.friendCe.split(':');
     // 클래스 스코어: 판별 수치를 클래스 이름별로 펼친다
@@ -229,11 +242,12 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       // 프렌드 예장 칸은 하나: 인연 예장이거나, 시작 NP 예장(np:수치)이거나
       friendCe: fNo && fNo !== 'np' && fNo !== 'auto' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendCeAuto: fNo === 'auto', friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
-      mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, commandSpell: !!prefs.cs, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
+      mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, commandSpell: !!prefs.cs, npPlan: prefs.npPlan ?? true, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
     };
-    w.postMessage({ pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings });
+    const req = { pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings };
+    ws.forEach((w, index) => w.postMessage({ type: 'cores', req, shard: { index, count } }));
   };
-  useEffect(() => () => worker.current?.terminate(), []);
+  useEffect(() => stopWorkers, []);
 
   const ownedCount = useMemo(() => Object.values(roster).filter((r) => r.owned).length, [roster]);
   const minTurns = quest ? suggestTurns(quest) : 0;
@@ -371,6 +385,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           </label>
           <label className="check" title="령주 1획으로 아군 한 명의 NP를 100% 채우는 것을 허용합니다. 령주 없이 깨지는 편성에는 쓰지 않고, 령주를 써야만 되는 편성에는 결과에 표시합니다. 령주는 하루에 1획씩 회복됩니다.">
             <input type="checkbox" checked={!!prefs.cs} onChange={(e) => set('cs', e.target.checked)} /> 령주 1획 사용 (NP +100%)
+          </label>
+          <label className="check" title="정해진 운용으로 안 깨지는 편성은 턴마다 누가 보구를 쏠지 바꿔 가며 다시 찾습니다. 서포터의 보구(제갈공명·알트리아 캐스터 같은 버프·디버프 보구 포함)를 쓰는 경우와 한 턴에 보구 2~3개를 함께 쏘는 경우가 여기에 들어갑니다. 끄면 계산이 2~3배 빨라지지만 찾는 편성이 줄어듭니다.">
+            <input type="checkbox" checked={prefs.npPlan ?? true} onChange={(e) => set('npPlan', e.target.checked)} /> 보구 조합 탐색 (서포터 보구 · 한 턴에 보구 여러 개)
           </label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 2 (시작 NP 20%)</label>
           <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 5 (쿨타임 -1)</label>
@@ -526,7 +543,7 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
               {t.nps.map((n, k) => (
                 <div key={k} className="np">
                   보구: {n.who} 「{n.np}」
-                  <span className="small muted"> {n.hits.map((h) => `${h.enemy} ${h.dmg.toLocaleString()}/${h.hp.toLocaleString()}${h.kill ? ' 처치' : ''}`).join(' · ')} · NP 회수 {(n.refund / 100).toFixed(0)}%</span>
+                  <span className="small muted"> {n.hits.length ? <>{n.hits.map((h) => `${h.enemy} ${h.dmg.toLocaleString()}/${h.hp.toLocaleString()}${h.kill ? ' 처치' : ''}`).join(' · ')} · NP 회수 {(n.refund / 100).toFixed(0)}%</> : '버프·디버프 보구 (대미지 없음)'}</span>
                 </div>
               ))}
               {!t.nps.length && <div className="small muted">보구 없음</div>}
