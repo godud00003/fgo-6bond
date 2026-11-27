@@ -416,11 +416,12 @@ const dealers = (s: State) => s.actors.filter((a) => a.cfg.role === 'dealer' && 
 
 /** 준비된 딜러의 보구를 차례로 발동한다. 필드가 비면 남은 보구는 아낀다. */
 function npPhase(s: State, log?: TurnLog) {
-  const order = dealers(s).sort((x, y) => Number(blocksLater(x)) - Number(blocksLater(y)));
+  // 보구는 카드를 고르는 시점에 NP가 100%여야 쓸 수 있다: 같은 턴에 먼저 나간 보구가 채워 준 NP로는 쏠 수 없다
+  const order = dealers(s).filter((a) => a.gauge >= 10000).sort((x, y) => Number(blocksLater(x)) - Number(blocksLater(y)));
   let chain = 0;
   for (const a of order) {
     // 앞선 보구의 제물이 되어 이미 퇴장했을 수 있다
-    if (!s.actors.includes(a) || a.gauge < 10000 || !alive(s).length) continue;
+    if (!s.actors.includes(a) || !alive(s).length) continue;
     fireNp(s, a, log, chain++);
   }
 }
@@ -873,8 +874,9 @@ function fireOrder(list: Actor[]): Actor[] {
 /** 계획한 보구를 순서대로 쏜다. 필드가 비면 남은 대미지 보구는 아낀다. */
 function firePlan(s: State, plan: Actor[], log?: TurnLog) {
   let chain = 0;
-  for (const a of plan) {
-    if (!s.actors.includes(a) || a.gauge < 10000) continue;
+  // 카드를 고르는 시점에 NP가 100%인 보구만 쏠 수 있다(같은 턴의 앞선 보구가 채워 준 NP는 소용없다)
+  for (const a of plan.filter((x) => x.gauge >= 10000)) {
+    if (!s.actors.includes(a)) continue;
     if (a.cfg.svt.np!.dmg && !alive(s).length) continue;
     fireNp(s, a, log, chain++);
   }
@@ -1022,7 +1024,16 @@ function replay(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra & {
   const log: TurnLog[] = [];
   for (let t = 0; t < script.length; t++) {
     const entry: TurnLog = { turn: t + 1, wave: s.wave + 1, skills: [], nps: [] };
+    let picked = false; // 이 턴의 보구 카드를 골랐는가: 고르는 시점에 쏠 보구 전부의 NP가 100%여야 한다
     for (const op of script[t]) {
+      if (op[0] === 'n' && !picked) {
+        picked = true;
+        for (const o of script[t]) {
+          if (o[0] !== 'n') continue;
+          const x = onField(o[1]);
+          if (x && x.gauge < 10000) return null;
+        }
+      }
       if (op[0] === 'x') { if (!swapOut(s, entry)) return null; continue; }
       const a = onField(op[1]);
       if (!a || a.disabled) return null;
