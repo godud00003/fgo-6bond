@@ -33,6 +33,7 @@ const stock: CEStock[] = ces.map((ce) => ({ ce, count: 1, mlb: true }));
 const mcs: MysticCode[] = j('mcs.json');
 // 환경 변수: MC=마술예장 id, CARDNP=평타 NP 가정(100 = 1%)
 // NODUP=1 이면 동일 서번트 편성 제외
+// EV=시작NP,특공,장수 이면 딜러용 이벤트 예장 사용(예: EV=5000,2000,1 = 차지 50% · 특공 200% 1장)
 // MUST=도감번호,도감번호 이면 그 서번트를 반드시 포함
 // MC=auto 마술예장 자동 선택 / MC=예장 id, OC=1 오더 체인지 편성 포함
 // FNP=10000 이면 프렌드가 시작 NP 100% 예장을 낀 것으로 계산
@@ -47,7 +48,7 @@ if (process.env.SCORE) for (const b of j('boards.json') as { cls: string[]; sq: 
   for (const [k, n] of Object.values(b.sq)) v['baq'.indexOf(k) >= 0 ? 'baq'.indexOf(k) : 3] += n;
   for (const c of b.cls) fullScore[c] = v;
 }
-const st = { score: process.env.SCORE ? fullScore : undefined, friendScore: process.env.SCORE ? fullScore : undefined, commandSpell: !!process.env.CS, npPlan: !process.env.NOPLAN, prune: !process.env.NOPRUNE, friendCeAuto: process.env.FCE === 'auto', friendStartNp: Number(process.env.FNP || 0), reload: process.env.NORELOAD ? 0 : 3, must: (process.env.MUST || '').split(',').filter(Boolean).map(Number), allowDup: !process.env.NODUP, lv1, mc: mcs.find((m) => m.id === Number(process.env.MC)) ?? null, mcAuto: process.env.MC === 'auto' ? mcs : undefined, orderChange: !!process.env.OC, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
+const st = { score: process.env.SCORE ? fullScore : undefined, friendScore: process.env.SCORE ? fullScore : undefined, commandSpell: !!process.env.CS, npPlan: !process.env.NOPLAN, prune: !process.env.NOPRUNE, friendCeAuto: process.env.FCE === 'auto', friendStartNp: Number(process.env.FNP || 0), reload: process.env.NORELOAD ? 0 : 3, eventCe: process.env.EV ? (([np, power, count]) => ({ np, power, count: count || 1, cost: 12 }))(process.env.EV.split(',').map(Number)) : null, must: (process.env.MUST || '').split(',').filter(Boolean).map(Number), allowDup: !process.env.NODUP, lv1, mc: mcs.find((m) => m.id === Number(process.env.MC)) ?? null, mcAuto: process.env.MC === 'auto' ? mcs : undefined, orderChange: !!process.env.OC, cardNp: Number(process.env.CARDNP || 0), maxTurns: Number(process.argv[4] || 3), costCap: 112, roll: 0.9, startNp: 2000, friendCe: null, topN: 5, teapot: 1 };
 const t0 = Date.now();
 // SHARDS=n 이면 탐색을 n몫으로 나눠 차례로 계산한 뒤 합친다(앱의 워커 분할과 같은 경로)
 const shards = Number(process.env.SHARDS || 0);
@@ -61,6 +62,7 @@ for (const p of out.results) {
   console.log('  후열:', p.back.map((m) => (m.svt ? `${m.svt.name}${m.npc ? '(지정 서포트)' : m.friend ? '(프렌드)' : ''}${m.sub ? '[교체 투입]' : ''} ${m.bond}` : '(프렌드 자유)')).join(' | '));
   if (p.mc) console.log('  마술예장:', p.mc.name);
   console.log('  예장:', p.ces.map((c) => c.ce.name).join(', '));
+  if (p.eventCe) console.log('  이벤트 예장 장착:', p.eventCe.dealers.join(', '));
 }
 const p = out.results[0];
 if (p) for (const t of p.sim.log) {

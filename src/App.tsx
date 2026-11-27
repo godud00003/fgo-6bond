@@ -11,6 +11,8 @@ type Data = Dataset;
 import { boardScore, importLogin, type Roster, type RosterEntry, type Stock } from './engine/importLogin.ts';
 
 interface Prefs {
+  /** 이벤트 예장(딜러용): 시작 NP(10000 = 100%), 공격 위력 UP(천분율), 가진 장수 */
+  evNp?: number; evPower?: number; evCount?: number;
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fAppend2: boolean; fAppend5: boolean; fou: number;
   friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; cs: boolean; npPlan: boolean; autoUpdate: boolean;
   /** 내 서번트를 스킬 레벨 10 / 어펜드 2·5 개방으로 가정하고 계산한다(육성하면 되는 편성 찾기) */
@@ -256,6 +258,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, commandSpell: !!prefs.cs, npPlan: prefs.npPlan ?? true, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup,
       // 퀘스트가 편성을 강제하는 서번트는 검색 쪽에서 더한다(막간의 이야기·강화 퀘스트라고 해서 그 서번트가 필수인 것은 아니다)
       must: prefs.must ?? [],
+      // 이벤트 예장: 5성 예장(코스트 12)으로 본다
+      eventCe: (prefs.evNp || prefs.evPower) ? { np: prefs.evNp ?? 0, power: prefs.evPower ?? 0, count: prefs.evCount ?? 1, cost: 12 } : null,
     };
     const req = { pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings };
     ws.forEach((w, index) => w.postMessage({ type: 'cores', req, shard: { index, count } }));
@@ -373,6 +377,19 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
             <select value={prefs.cardNp} onChange={(e) => set('cardNp', Number(e.target.value))}>
               <option value={0}>없음 — 확정 클리어</option><option value={500}>5%</option><option value={1000}>10%</option>
             </select>
+          </label>
+          <label>이벤트 예장 (딜러가 끼는 차지·특공 예장)
+            <span className="evrow">
+              <select value={prefs.evNp ?? 0} onChange={(e) => set('evNp', Number(e.target.value))}>
+                <option value={0}>차지 0%</option><option value={3000}>차지 30%</option><option value={5000}>차지 50%</option>
+              </select>
+              <select value={prefs.evPower ?? 0} onChange={(e) => set('evPower', Number(e.target.value))}>
+                <option value={0}>특공 0%</option><option value={1000}>특공 100%</option><option value={2000}>특공 200%</option>
+              </select>
+              <select value={prefs.evCount ?? 1} onChange={(e) => set('evCount', Number(e.target.value))} disabled={!prefs.evNp && !prefs.evPower}>
+                {[1, 2, 3].map((n) => <option key={n} value={n}>{n}장</option>)}
+              </select>
+            </span>
           </label>
           <label>찻주전자
             <select value={prefs.teapot} onChange={(e) => set('teapot', Number(e.target.value))}>
@@ -538,7 +555,7 @@ function Result({ r, rank, base, raise }: { r: PartyResult; rank: number; base: 
         {m.sub && <b className="sub"> · 교체 투입</b>}{m.swapOut && <b className="sub"> · 오더 체인지로 나감</b>}
       </div>
       {m.svt && !m.friend && <div className="small"><b className={m.counted ? 'bond' : 'muted'}>{m.counted ? `+${m.bond.toLocaleString()}` : '인연 MAX'}</b></div>}
-      <div className={`slotce ${r.atkCe && m.ce?.ce.no === r.atkCe.ce.no && !m.friend ? 'need' : ''}`}>
+      <div className={`slotce ${!m.friend && m.ce && ((r.atkCe && m.ce.ce.no === r.atkCe.ce.no) || (r.eventCe && m.ce.ce.no < 0)) ? 'need' : ''}`}>
         {m.ce ? (
           <>
             <Face src={m.ce.ce.face} name={m.ce.ce.name} />
@@ -581,7 +598,7 @@ function Result({ r, rank, base, raise }: { r: PartyResult; rank: number; base: 
         <div className="log">
           <p className="small muted">
             예장의 인연 효과는 누가 껴도 같습니다(파티 전체 적용).
-            {r.atkCe ? ` 단, "${r.atkCe.ce.name}" 예장은 ${r.atkCe.dealer}에게 끼우세요. 이 예장의 ATK +${r.atkCe.atk.toLocaleString()}까지 더해야 클리어됩니다.` : ' ATK가 붙은 예장은 딜러에게 끼우면 여유가 생깁니다.'}
+            {r.eventCe ? ` 단, "${r.eventCe.name}"은(는) ${r.eventCe.dealers.join(', ')}에게 끼워야 클리어됩니다(인연 효과 없음, 코스트 12로 계산).` : r.atkCe ? ` 단, "${r.atkCe.ce.name}" 예장은 ${r.atkCe.dealer}에게 끼우세요. 이 예장의 ATK +${r.atkCe.atk.toLocaleString()}까지 더해야 클리어됩니다.` : ' ATK가 붙은 예장은 딜러에게 끼우면 여유가 생깁니다.'}
             {' '}스킬 순서는 시뮬레이터가 고른 한 가지 예시입니다.
           </p>
           {r.sim.log.map((t) => (

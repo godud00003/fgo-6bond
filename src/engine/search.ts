@@ -48,7 +48,23 @@ export interface Settings {
   allowDup?: boolean;
   /** 반드시 내 파티에 포함할 서번트(도감 번호). 딜러·서포터가 아니면 인연용 자리에 넣는다. */
   must?: number[];
+  /**
+   * 이벤트 예장(인연 효과 없음): 내 딜러가 끼는 시작 NP + 공격 위력 UP(이벤트 특공) 예장.
+   * np: 시작 NP(10000 = 100%), power: 공격 위력 UP(천분율), count: 가진 장수(주 딜러부터 끼운다), cost: 코스트.
+   * 이 예장 없이 클리어되는 편성은 끼우지 않고, 안 되는 편성만 끼운 조건으로 다시 계산한다(인연 예장 칸과 코스트를 차지하므로).
+   */
+  eventCe?: { np: number; power: number; count: number; cost: number } | null;
 }
+const eventCeOf = (st: Settings) => (st.eventCe && (st.eventCe.np > 0 || st.eventCe.power > 0) && st.eventCe.count > 0 ? st.eventCe : null);
+/** 이벤트 예장을 인연 최적화에 넣기 위한 가짜 예장(인연 효과 0). 도감 번호 -1로 구분한다. */
+export const EVENT_CE_NO = -1;
+const eventCeStock = (ev: NonNullable<Settings['eventCe']>): CEStock => ({
+  ce: {
+    id: 0, no: EVENT_CE_NO, name: `이벤트 예장 (NP ${ev.np / 100}% · 특공 ${ev.power / 10}%)`, rarity: 5, cost: ev.cost,
+    kind: 'pct', val: [0, 0], cond: [], sup: null, face: '', atk: 0,
+  },
+  count: ev.count, mlb: true, atk: 0,
+});
 export interface Member {
   svt: Servant; friend: boolean; role: 'dealer' | 'support' | 'filler'; bond: number; counted: boolean;
   /** 후열에서 시작해 전투 중 들어오는 교체 요원 / 오더 체인지로 내보내는 서번트 */
@@ -63,6 +79,8 @@ export interface PartyResult {
   friendCe: BondCE | null; total: number; cost: number; sim: SimResult;
   /** 이 예장을 표시된 딜러에게 끼워야 클리어된다(예장 ATK가 필요한 편성) */
   atkCe?: { ce: BondCE; atk: number; dealer: string };
+  /** 이벤트 예장을 표시된 딜러들에게 끼워야 클리어된다 */
+  eventCe?: { name: string; dealers: string[] };
   /** 이 마술예장을 써야 클리어된다(없으면 예장과 무관) */
   mc?: { id: number; name: string; face?: string };
   /** 령주 1획을 써야 클리어된다 */
@@ -180,8 +198,11 @@ export function findCores(
     : lentCfg(s, role));
   // 예장 ATK: 보유한 인연 예장 중 ATK가 가장 높은 것을 주 딜러에게 끼운다고 본다.
   // 예장 없이도 클리어되는 편성은 그대로 두고, 안 되는 편성만 이 예장을 낀 조건으로 다시 계산한다.
-  const atkStock = bestAtkStock(stock);
+  // 이벤트 예장을 쓰는 설정이면 주 딜러의 예장 칸은 이벤트 예장 몫이다(인연 예장의 ATK는 더하지 않는다).
+  const ev = eventCeOf(st);
+  const atkStock = ev ? null : bestAtkStock(stock);
   const plusAtk = atkStock ? ceAtkOf(atkStock) : 0;
+  const boostOn = plusAtk > 0 || !!ev;
   const allowDup = st.allowDup !== false;
   let simulated = 0;
   let useCs = false; // 지금 계산에서 령주를 쓸 수 있는가(령주 없이 안 될 때만 켠다)
@@ -285,30 +306,42 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     if (!as.length) return 0;
     /** 프렌드 자리를 f0로 놓고 계산한다. 클리어되면 조건(마술예장·예장 ATK)을 가장 덜어 낸 결과를 돌려준다. */
     const attemptBase = (f0: number): { sim: SimResult; mc: MysticCode | null; atk: boolean; lu: ActorCfg[] } | null => {
-      const mk = (plus: number): ActorCfg[] => slots.map((s, i) => ({
-        ...(i === f0 ? friendCfg(allByNo.get(s.no)!, s.role) : cfg(byNo.get(s.no)!, s.role, s.boost ? plus : 0)),
-        bench: s.bench, swapOut: s.swapOut, main: s.boost,
-      }));
+      const mk = (on: boolean): ActorCfg[] => {
+        // 이벤트 예장을 끼는 자리: 주 딜러 먼저, 그다음 내 딜러를 자리 순으로, 가진 장수만큼
+        const evAt = new Set<number>();
+        if (on && ev) {
+          const order = slots.map((_, i) => i).filter((i) => i !== f0 && slots[i].role === 'dealer')
+            .sort((a, b) => Number(!!slots[b].boost) - Number(!!slots[a].boost));
+          for (const i of order.slice(0, ev.count)) evAt.add(i);
+        }
+        return slots.map((s, i) => {
+          const c = i === f0 ? friendCfg(allByNo.get(s.no)!, s.role) : cfg(byNo.get(s.no)!, s.role, on && s.boost ? plusAtk : 0);
+          return {
+            ...c, ...(evAt.has(i) ? { startNp: c.startNp + ev!.np, power: ev!.power, ev: true } : {}),
+            bench: s.bench, swapOut: s.swapOut, main: s.boost,
+          };
+        });
+      };
       // 대부분의 편성은 실패한다. 그래서 가장 유리한 조건(예장 ATK + 후보 예장의 스킬을 전부 가진 가상의 예장)부터
       // 계산해, 그걸로도 안 되면 한 번에 포기한다.
-      if (mcs.length > 1 || plusAtk) {
-        const top = run(mk(plusAtk), mcs.length > 2 ? superMc : mcs[mcs.length - 1]);
-        if (!top.cleared) { noteFail(mk(0).map((x) => x.svt.name), top); return null; }
+      if (mcs.length > 1 || boostOn) {
+        const top = run(mk(true), mcs.length > 2 ? superMc : mcs[mcs.length - 1]);
+        if (!top.cleared) { noteFail(mk(false).map((x) => x.svt.name), top); return null; }
       }
       // 되는 편성이면 가장 가벼운 조건부터 찾는다: 첫 예장(보통 없음)·예장 ATK 없음
-      const lu0 = mk(0);
+      const lu0 = mk(false);
       const first = run(lu0, mcs[0]);
       if (first.cleared) return { sim: first, mc: mcs[0], atk: false, lu: lu0 };
-      if (mcs.length === 1 && !plusAtk) { noteFail(mk(0).map((x) => x.svt.name), first); return null; }
+      if (mcs.length === 1 && !boostOn) { noteFail(lu0.map((x) => x.svt.name), first); return null; }
       // 되는 것을 확인했으니 실제 조건을 찾는다: 마술예장만 → 예장 ATK만 → 둘 다
       for (const m of mcs.slice(1)) { const r = run(lu0, m); if (r.cleared) return { sim: r, mc: m, atk: false, lu: lu0 }; }
-      if (plusAtk) {
-        const lu1 = mk(plusAtk);
+      if (boostOn) {
+        const lu1 = mk(true);
         const r0 = run(lu1, mcs[0]);
         if (r0.cleared) return { sim: r0, mc: mcs[0], atk: true, lu: lu1 };
         for (const m of mcs.slice(1)) { const r = run(lu1, m); if (r.cleared) return { sim: r, mc: m, atk: true, lu: lu1 }; }
       }
-      noteFail(mk(0).map((x) => x.svt.name), first);
+      noteFail(lu0.map((x) => x.svt.name), first);
       return null;
     };
     // 령주는 아껴 쓴다: 령주 없이 먼저 해 보고, 안 될 때만 령주를 쓴 계산을 한다
@@ -334,7 +367,8 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     };
     // 프렌드가 내 서번트와 조건이 다르면(시작 NP 예장) 프렌드 자리마다 따로 계산한다.
     // 그렇지 않으면 전투 결과는 누가 프렌드든 같다고 보고 내 서번트가 가장 많은 배치로 한 번만 계산한다.
-    if (st.friendStartNp || npc) {
+    // 이벤트 예장도 내 딜러만 끼므로 누가 프렌드인지에 따라 결과가 달라진다.
+    if (st.friendStartNp || npc || ev) {
       let best = 0;
       for (const f of as) { const r = attempt(f); if (r) { push(f, r); best = best === 1 ? 1 : r.atk ? 2 : 1; } }
       return best;
@@ -456,7 +490,9 @@ export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[
   const byNo = new Map(pool.map((p) => [p.svt.no, p]));
   const allByNo = new Map(all.map((s) => [s.no, s]));
   const mcById = new Map([st.mc, ...(st.mcAuto ?? [])].filter((m): m is MysticCode => !!m).map((m) => [m.id, m]));
-  const atkStock = bestAtkStock(stock);
+  const ev = eventCeOf(st);
+  const atkStock = ev ? null : bestAtkStock(stock);
+  const evCount = (c: Core) => c.lu.filter((x) => x.ev && !x.friend).length;
   const unpack = (c: PackedCore): Core => ({
     own: c.own.map((n) => byNo.get(n)!), friend: c.friend === null ? null : allByNo.get(c.friend)!, friendRole: c.friendRole, roles: new Map(c.roles), sim: c.sim,
     mc: c.mc === null ? null : mcById.get(c.mc) ?? null, cs: c.cs, bench: new Set(c.bench), friendBench: c.friendBench, swapOut: c.swapOut, seq: c.seq, u: c.u,
@@ -474,8 +510,10 @@ export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[
   const rank = (s2: Settings): PartyResult[] => {
     // 예장 ATK가 필요한 편성은 그 예장을 반드시 포함하는 조건으로 인연을 따로 최적화한다
     const all2 = [...optimizeBond(cores, pool, stock, quest, s2, null), ...(atkStock ? optimizeBond(coresAtk, pool, stock, quest, s2, atkStock) : [])];
+    // 이벤트 예장이 필요한 편성: 끼는 장수만큼 예장 칸과 코스트를 미리 뺀 조건으로 인연을 최적화한다
+    if (ev) for (let n = 1; n <= 5; n++) all2.push(...optimizeBond(coresAtk.filter((c) => evCount(c) === n), pool, stock, quest, s2, eventCeStock(ev), n));
     // 인연이 같으면 턴이 적고, 조건(예장 ATK·마술예장·교체)이 덜 붙은 편성을 앞에 둔다
-    const burden = (r: PartyResult) => Number(!!r.atkCe) + Number(!!r.mc) + Number(r.back.some((m) => m.sub)) + (r.cs ? 3 : 0);
+    const burden = (r: PartyResult) => Number(!!r.atkCe) + (r.eventCe?.dealers.length ?? 0) + Number(!!r.mc) + Number(r.back.some((m) => m.sub)) + (r.cs ? 3 : 0);
     all2.sort((a, b) => b.total - a.total || a.turns - b.turns || burden(a) - burden(b) || a.cost - b.cost);
     // 멤버 구성이 완전히 같은 결과는 하나만
     const seen = new Set<string>();
@@ -558,15 +596,18 @@ export function bondFor(base: number, front: number, pct: number, flat: number):
 interface UniItem { ce: BondCE; mlb: boolean; cost: number; g: number; pct: number; flat: number; atk: number }
 interface Node { item: UniItem; prev: Node | null; pct: number; flat: number }
 
-/** forced: 반드시 포함할 예장(주 딜러에게 끼우는 ATK 예장). 예장 칸 하나와 코스트를 미리 차지한다. */
-function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest: QuestData, st: Settings, forced: CEStock | null): PartyResult[] {
+/**
+ * forced: 반드시 포함할 예장(주 딜러에게 끼우는 ATK 예장, 또는 딜러들이 끼는 이벤트 예장). nForced장만큼 예장 칸과 코스트를 미리 차지한다.
+ */
+function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest: QuestData, st: Settings, forced: CEStock | null, nForced = forced ? 1 : 0): PartyResult[] {
   if (!cores.length) return [];
   const npc = quest.npc;
   const base = quest.bond;
-  const cap = st.costCap - (forced ? forced.ce.cost : 0);
+  const cap = st.costCap - (forced ? forced.ce.cost * nForced : 0);
   if (cap < 0) return [];
-  const SLOTS = 5;                       // 내 서번트 자리
-  const CE_SLOTS = 5 - (forced ? 1 : 0); // 자유롭게 고를 수 있는 예장 칸
+  const isEv = forced?.ce.no === EVENT_CE_NO;
+  const SLOTS = 5;                 // 내 서번트 자리
+  const CE_SLOTS = 5 - nForced;    // 자유롭게 고를 수 있는 예장 칸
   const pctOf = (s: CEStock) => s.ce.val[s.mlb ? 1 : 0];
   const xVal = forced ? pctOf(forced) : 0;
   const xCondFor = (traits: number[]) => (forced && forced.ce.kind === 'pct' && forced.ce.cond.length && condMatch(forced.ce.cond, traits) ? xVal : 0);
@@ -785,20 +826,23 @@ function optimizeBond(cores: Core[], pool: PoolEntry[], stock: CEStock[], quest:
     else if (!friend && !idle) back.push({ svt: null as unknown as Servant, friend: true, role: 'filler', bond: 0, counted: false });
     const own = [...coreMembers, ...fillers];
     // 반드시 포함하는 예장은 효과를 위에서 이미 더했으므로 목록에만 추가한다
-    const allCes = forced ? [{ ce: forced.ce, mlb: forced.mlb }, ...ces] : ces;
+    const allCes = forced ? [...Array.from({ length: nForced }, () => ({ ce: forced.ce, mlb: forced.mlb })), ...ces] : ces;
+    // 이벤트 예장을 끼는 내 딜러(시뮬레이션한 편성 그대로)
+    const evNos = isEv ? b.core.lu.filter((x) => x.ev && !x.friend).map((x) => x.svt.no) : [];
     // 누가 어떤 예장을 끼는지 정한다: 필수 ATK 예장은 지정된 딜러에게, 나머지는 ATK가 높은 것부터 딜러 → 그 외 순으로
     const atkDealer = forced ? (b.core.own.find((p) => b.core.roles.get(p.svt.no) === 'dealer' && !p.svt.np?.dies) ?? b.core.own[0]).svt.no : -1;
     const ceAtk = (c: { ce: BondCE }) => stock.find((x) => x.ce.no === c.ce.no)?.atk ?? c.ce.atk;
     const rest = ces.slice().sort((x, y) => ceAtk(y) - ceAtk(x));
     const ownInOrder = [...front, ...back].filter((m) => m.svt && !m.friend);
-    for (const m of ownInOrder) if (forced && m.svt.no === atkDealer) m.ce = { ce: forced.ce, mlb: forced.mlb };
+    for (const m of ownInOrder) if (forced && (isEv ? evNos.includes(m.svt.no) : m.svt.no === atkDealer)) m.ce = { ce: forced.ce, mlb: forced.mlb };
     for (const m of [...ownInOrder.filter((x) => x.role === 'dealer'), ...ownInOrder.filter((x) => x.role !== 'dealer')]) if (!m.ce && rest.length) m.ce = rest.shift();
     if (fCe) for (const m of [...front, ...back]) if (m.friend) m.ce = { ce: fCe, mlb: fMlb === 1 };
     out.push({
       turns: b.core.sim.turns, front, back, ces: allCes, friendCe: fCe, sim: b.core.sim,
       total: own.reduce((s, m) => s + (m.counted ? m.bond : 0), 0),
       cost: own.reduce((s, m) => s + m.svt.cost, 0) + allCes.reduce((s, c) => s + c.ce.cost, 0),
-      atkCe: forced ? { ce: forced.ce, atk: forced.atk ?? forced.ce.atk, dealer: (b.core.own.find((p) => b.core.roles.get(p.svt.no) === 'dealer' && !p.svt.np?.dies) ?? b.core.own[0]).svt.name } : undefined,
+      eventCe: isEv ? { name: forced!.ce.name, dealers: evNos.map((no) => b.core.own.find((p) => p.svt.no === no)?.svt.name ?? `#${no}`) } : undefined,
+      atkCe: forced && !isEv ? { ce: forced.ce, atk: forced.atk ?? forced.ce.atk, dealer: (b.core.own.find((p) => b.core.roles.get(p.svt.no) === 'dealer' && !p.svt.np?.dies) ?? b.core.own[0]).svt.name } : undefined,
       mc: b.core.mc ? { id: b.core.mc.id, name: b.core.mc.name, face: b.core.mc.face } : undefined,
       cs: b.core.cs || undefined,
     });

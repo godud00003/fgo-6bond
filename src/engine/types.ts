@@ -80,6 +80,8 @@ export interface ActorCfg {
   friend?: boolean;
   /** 퀘스트가 지정한 서포트(NPC). friend와 함께 켜진다. 클래스 스코어가 적용되지 않는다. */
   npc?: boolean;
+  /** 이벤트 예장을 꼈다: 시작 NP는 startNp에 이미 더해져 있고, power는 전투 내내 걸리는 공격 위력 UP(천분율) */
+  ev?: boolean; power?: number;
   /** 어펜드 스킬 5(스킬 재장전)의 남은 횟수: 스킬을 처음 쓸 때 쿨타임이 1 줄어든다(스킬마다 1회) */
   reload?: number;
   /** 후열에서 시작한다. 전열이 퇴장하거나 오더 체인지를 쓰면 들어온다. */

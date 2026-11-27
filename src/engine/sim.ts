@@ -844,6 +844,10 @@ function initState(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra 
   s.ctx = skillCtx(front, quest, opt.mc);
   setLabels(front);
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
+  // 이벤트 예장의 공격 위력 UP(이벤트 특공): 조건 없이 전투 내내 걸린다
+  for (const a of [...s.actors, ...s.bench]) {
+    if (a.cfg.power) applyFn(s, a, { t: 'addStateShort', tg: 'self', sv: { Rate: 1000, Turn: -1, Count: -1, Value: a.cfg.power }, b: [{ t: 'upDamage' }] }, 0, a);
+  }
   // 클래스 스코어: 그 클래스 서번트에게 전투 내내 걸리는 카드 위력·보구 위력 UP
   for (const a of [...s.actors, ...s.bench]) {
     const sc = (a.cfg.npc ? undefined : a.cfg.friend ? opt.friendScore : opt.score)?.[a.cfg.svt.cls];
