@@ -1013,8 +1013,7 @@ export function simulatePlan(front: ActorCfg[], quest: QuestData, rel: Rel, opt:
 // 기록한 행동을 그대로 다시 재생할 수 있으므로, 스킬을 하나씩 빼고 재생해 봐서 그래도 같은 턴 안에 클리어되면 뺀다.
 
 /** 턴별 행동 목록을 그대로 실행한다. 할 수 없는 행동이 있거나 클리어하지 못하면 null. */
-/** why를 주면 재생이 막힌 이유를 한 줄 적어 준다(진단용). */
-export function replay(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra & { roll: number }, script: Op[][], why?: string[]): SimResult | null {
+function replay(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra & { roll: number }, script: Op[][]): SimResult | null {
   const s = initState(front, quest, rel, opt);
   const total = countTotal(quest), bars = countBars(quest);
   if (!total) return null;
@@ -1024,25 +1023,22 @@ export function replay(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimEx
   for (let t = 0; t < script.length; t++) {
     const entry: TurnLog = { turn: t + 1, wave: s.wave + 1, skills: [], nps: [] };
     for (const op of script[t]) {
-      if (op[0] === 'x') { if (!swapOut(s, entry)) { why?.push(`${t + 1}턴에 오더 체인지를 할 수 없음`); return null; } continue; }
+      if (op[0] === 'x') { if (!swapOut(s, entry)) return null; continue; }
       const a = onField(op[1]);
-      if (!a || a.disabled) { why?.push(`${t + 1}턴에 행동할 서번트가 전열에 없음`); return null; }
+      if (!a || a.disabled) return null;
       if (op[0] === 'n') {
-        if (a.gauge < 10000) { why?.push(`${t + 1}턴에 ${nameOf(a)}의 NP가 ${Math.floor(a.gauge / 100)}%에 그쳐 보구를 못 씀`); return null; }
+        if (a.gauge < 10000) return null;
         if (a.cfg.svt.np!.dmg && !alive(s).length) continue;
         fireNp(s, a, entry, op[2]);
         continue;
       }
       const target = onField(op[3]) ?? a;
-      if (!available(s).some((r) => r.a === a && r.i === op[2]) && !(a === s.master && a.cd[op[2]] === 0)) { why?.push(`${t + 1}턴에 ${nameOf(a)}의 ${op[2] + 1}스를 쓸 수 없음`); return null; }
+      if (!available(s).some((r) => r.a === a && r.i === op[2]) && !(a === s.master && a.cd[op[2]] === 0)) return null;
       useSkill(s, { a, i: op[2] }, target, entry);
     }
     log.push(entry);
-    const left = alive(s).map((e) => `${e.def.name} HP ${e.bars[0].toLocaleString('ko-KR')}`);
     if (endTurn(s)) return { cleared: true, turns: t + 1, killed: s.killed, total, log, broken: s.broken, bars };
-    if (left.length && why && !why.length) why.push(`${t + 1}턴에 적이 남음 (${left.join(', ')})`);
   }
-  if (why && !why.length) why.push('턴 안에 클리어하지 못함');
   return null;
 }
 
@@ -1067,17 +1063,6 @@ export function trimSkills(front: ActorCfg[], quest: QuestData, rel: Rel, opt: S
     const r = replay(front, quest, rel, opt, trial);
     if (r && r.turns <= best.turns) { best = r; gone.add(op); script = trial; }
   }
-  // 남은 스킬마다, 그 스킬 하나를 빼면 어디서 막히는지 적어 둔다
-  const kept = best;
-  kept.log.forEach((tl) => {
-    let k = 0;
-    for (const op of tl.ops ?? []) {
-      if (op[0] !== 's') continue;
-      const entry = tl.skills[k++];
-      const why: string[] = [];
-      if (entry && !replay(front, quest, rel, opt, kept.log.map((x) => (x.ops ?? []).filter((o) => o !== op)), why) && why[0]) entry.why = why[0];
-    }
-  });
   return best;
 }
 

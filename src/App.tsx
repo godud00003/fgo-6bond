@@ -541,13 +541,13 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
           <p className="small muted">
             예장의 인연 효과는 누가 껴도 같습니다(파티 전체 적용).
             {r.atkCe ? ` 단, "${r.atkCe.ce.name}" 예장은 ${r.atkCe.dealer}에게 끼우세요. 이 예장의 ATK +${r.atkCe.atk.toLocaleString()}까지 더해야 클리어됩니다.` : ' ATK가 붙은 예장은 딜러에게 끼우면 여유가 생깁니다.'}
-            {' '}스킬 순서는 시뮬레이터가 고른 한 가지 예시입니다. 없어도 클리어되는 스킬은 뺐고, 남은 스킬 옆에는 그 스킬 하나를 뺐을 때 어디서 막히는지 적었습니다.
+            {' '}스킬 순서는 시뮬레이터가 고른 한 가지 예시입니다.
           </p>
           {r.sim.log.map((t) => (
             <div key={t.turn} className="turn">
               <b>{t.turn}턴</b> <span className="muted small">({t.wave}웨이브)</span>
               {t.events?.map((e, k) => <div key={`e${k}`} className="np"><b className="sub">{e}</b></div>)}
-              {t.skills.length > 0 && <ol>{t.skills.map((s, k) => <li key={k}>{s.who} — {s.skill}{s.target ? ` → ${s.target}` : ''}{s.why && <span className="why"> · 빼면 {s.why}</span>}</li>)}</ol>}
+              {t.skills.length > 0 && <ol>{t.skills.map((s, k) => <li key={k}>{s.who} — {s.skill}{s.target ? ` → ${s.target}` : ''}</li>)}</ol>}
               {t.nps.map((n, k) => (
                 <div key={k} className="np">
                   보구: {n.who} 「{n.np}」

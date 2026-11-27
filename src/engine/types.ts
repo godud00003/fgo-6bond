@@ -105,8 +105,7 @@ export interface QuestData {
 
 export interface TurnLog {
   turn: number; wave: number;
-  /** why: 이 스킬을 빼면 어디서 막히는가(결과에 표시하는 진행에만 채운다) */
-  skills: { who: string; skill: string; target?: string; why?: string }[];
+  skills: { who: string; skill: string; target?: string }[];
   nps: { who: string; np: string; hits: { enemy: string; dmg: number; hp: number; kill: boolean }[]; refund: number }[];
   /** 교체·퇴장 같은 사건 */
   events?: string[];
