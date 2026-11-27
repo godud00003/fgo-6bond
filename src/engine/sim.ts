@@ -128,11 +128,15 @@ function cloneState(s: State): State {
 /** 적이 처음부터 가지고 있는 패시브 버프 */
 const passiveBuffs = (def: EnemyDef): Buff[] => (def.passive ?? []).map((p) => ({ t: p.t, val: p.val, turn: p.turn, count: p.count, d: { t: p.t, cs: p.cs, co: p.co } }));
 
+/** 이 웨이브에서 적이 동시에 설 수 있는 자리 수(보통 3, 일부 퀘스트는 6) */
+const fieldSize = (s: State) => s.quest.waveSize?.[s.wave] ?? 3;
+
 function loadWave(s: State) {
   const defs = s.quest.waves[s.wave].slice().sort((a, b) => a.deckId - b.deckId);
   const all = defs.map((def) => ({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false }));
-  s.field = all.slice(0, 3);
-  s.reserve = all.slice(3);
+  const size = fieldSize(s);
+  s.field = all.slice(0, size);
+  s.reserve = all.slice(size);
   summon(s, false); // 웨이브 시작 시 소환(자기 증원 목록을 가진 적만)
 }
 
@@ -141,7 +145,7 @@ function loadWave(s: State) {
  * 자기 목록(def.call)을 가진 적은 그 적이 살아 있을 때, 웨이브 공통 목록은 적이 하나라도 남아 있을 때 소환된다.
  */
 function summon(s: State, withStage: boolean) {
-  const add = (def: EnemyDef) => { if (s.field.length < 3) s.field.push({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false, summoned: true }); };
+  const add = (def: EnemyDef) => { if (s.field.length < fieldSize(s)) s.field.push({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false, summoned: true }); };
   const callers = s.field.filter((e) => !e.dead);
   if (!callers.length) return;
   for (const c of callers) for (const d of c.def.call ?? []) add(d);
@@ -787,7 +791,7 @@ function endTurn(s: State): boolean {
     for (const b of e.buffs) if (b.turn > 0) b.turn--;
     e.buffs = e.buffs.filter((b) => b.turn !== 0);
   }
-  while (s.field.length < 3 && s.reserve.length) s.field.push(s.reserve.shift()!);
+  while (s.field.length < fieldSize(s) && s.reserve.length) s.field.push(s.reserve.shift()!);
   summon(s, true); // 플레이어 행동이 끝난 뒤 남은 적이 빈자리에 증원을 부른다
   if (!s.field.length) {
     s.wave++;

@@ -101,6 +101,8 @@ export interface QuestData {
   fieldTraits: number[]; waves: EnemyDef[][]; warnings: string[];
   /** 웨이브별 증원 목록: 특정 적이 아니라 필드에 적이 하나라도 남아 있으면 빈자리에 소환된다 */
   waveCalls?: EnemyDef[][];
+  /** 웨이브별 동시 등장 수(기본 3). 6마리가 한꺼번에 나오는 퀘스트에서만 들어 있다 */
+  waveSize?: number[];
 }
 
 export interface TurnLog {

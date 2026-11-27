@@ -170,7 +170,7 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
 
 /** 권장 턴 수: 웨이브마다 필드 3기씩 정리하는 턴 수와 브레이크 게이지 줄 수 중 큰 쪽 */
 function suggestTurns(q: QuestData): number {
-  return q.waves.reduce((n, w) => n + Math.max(Math.ceil(w.length / 3), ...w.map((e) => e.bars.length)), 0);
+  return q.waves.reduce((n, w, i) => n + Math.max(Math.ceil(w.length / (q.waveSize?.[i] ?? 3)), ...w.map((e) => e.bars.length)), 0);
 }
 
 function PartyTab({ data, roster, stock, prefs, setPrefs }: {

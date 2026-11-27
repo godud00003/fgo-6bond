@@ -120,6 +120,7 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
   const warnings: string[] = [];
   const waves: EnemyDef[][] = [];
   const waveCalls: EnemyDef[][] = [];
+  const waveSize: number[] = [];
   for (const st of raw.stages || []) {
     const byNpc = new Map<number, any>();
     for (const e of st.enemies) byNpc.set(e.npcId, e);
@@ -164,7 +165,7 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
       warnings.push(`${st.wave}웨이브의 적은 빈자리가 생기면 증원을 계속 소환합니다. 소환하는 적까지 같은 턴에 쓰러뜨려야 웨이브가 끝납니다.`);
     }
     if (wave.some((e) => e.bars.length > 1)) warnings.push(`${st.wave}웨이브에 브레이크 게이지를 가진 적이 있습니다.`);
-    if (wave.length) { waves.push(wave); waveCalls.push(stageCall); }
+    if (wave.length) { waves.push(wave); waveCalls.push(stageCall); waveSize.push(st.enemyFieldPosCount || 3); }
   }
   if (!waves.length) warnings.push('이 전투는 Atlas Academy에 적 데이터가 없습니다.');
   if (/랜덤|ランダム/.test(`${title ?? ''}${raw.name ?? ''}`)) {
@@ -174,6 +175,7 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
     id: raw.id, phase: raw.phase, name: title || raw.name, bond: raw.bond ?? 0, ap: raw.consume ?? 0,
     fieldTraits: (raw.individuality || []).map((t: any) => t.id), waves, warnings,
     waveCalls: waveCalls.some((c) => c.length) ? waveCalls : undefined,
+    waveSize: waveSize.some((n) => n !== 3) ? waveSize : undefined,
   };
 }
 
