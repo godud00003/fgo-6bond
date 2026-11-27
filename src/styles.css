@@ -101,3 +101,15 @@ footer { font-size: 12px; margin-top: 24px; }
 .dataline button { padding: 2px 8px; font-size: 12px; }
 .must { margin: 10px 0; }
 .must .x { border: none; background: none; padding: 0 0 0 6px; cursor: pointer; color: inherit; font-size: 14px; }
+
+/* 조건의 체크박스 옵션: 성격별로 한 줄씩 묶는다 */
+.optgroups { display: grid; gap: 6px; margin: 4px 0 10px; }
+.optgroup { display: grid; grid-template-columns: 170px 1fr; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line, rgba(128,128,128,.2)); }
+.optgroup .ohead { display: inline-flex; align-items: center; gap: 6px; }
+/* 도움말: ? 에 커서를 올리거나 눌러서 초점을 주면 설명이 뜬다 */
+.help { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--muted); font-size: 12px; font-weight: 700; cursor: help; }
+.help:hover, .help:focus { color: var(--accent); border-color: var(--accent); outline: none; }
+.help:hover::after, .help:focus::after { content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 6px); z-index: 20; width: min(340px, 78vw); padding: 10px 12px; border-radius: 8px; background: var(--ink); color: var(--card); font-size: 13px; font-weight: 400; line-height: 1.5; white-space: pre-line; text-align: left; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
+.optgroup .opts { display: flex; flex-wrap: wrap; gap: 6px 22px; }
+.optgroup label { display: inline-flex; font-size: 14px; }
+@media (max-width: 560px) { .optgroup { grid-template-columns: 1fr; gap: 4px; } }

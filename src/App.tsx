@@ -409,27 +409,44 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               <option value="full">전부 개방</option>
             </select>
           </label>
-          <label className="check" title="2부 6장의 일부 전투처럼 출전 서번트 전원(프렌드 포함)의 레벨이 1이 되는 기믹. 스킬·보구 레벨은 그대로이고 ATK만 레벨 1 수치로 계산합니다.">
-            <input type="checkbox" checked={prefs.lv1} onChange={(e) => set('lv1', e.target.checked)} /> 전원 레벨 1 고정 (2부 6장 기믹)
-          </label>
-          <label className="check" title="프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성(예: 같은 딜러 2기, 같은 서포터 2기)을 후보에 넣습니다.">
-            <input type="checkbox" checked={prefs.allowDup} onChange={(e) => set('allowDup', e.target.checked)} /> 동일 서번트 편성 허용 (프렌드로 같은 서번트 빌리기)
-          </label>
-          <label className="check" title="서포터 하나의 스킬을 다 쓴 뒤 후열의 다른 서포터와 바꾸는 편성도 찾습니다. 오더 체인지가 있는 마술예장(칼데아 전투복, 결전용 칼데아 제복)을 쓸 때만 적용됩니다. 계산이 조금 더 오래 걸립니다.">
-            <input type="checkbox" checked={!!prefs.oc} onChange={(e) => set('oc', e.target.checked)} /> 오더 체인지 사용 (전투복·결전용 제복)
-          </label>
-          <label className="check" title="령주 1획으로 아군 한 명의 NP를 100% 채우는 것을 허용합니다. 령주 없이 깨지는 편성에는 쓰지 않고, 령주를 써야만 되는 편성에는 결과에 표시합니다. 령주는 하루에 1획씩 회복됩니다.">
-            <input type="checkbox" checked={!!prefs.cs} onChange={(e) => set('cs', e.target.checked)} /> 령주 1획 사용 (NP +100%)
-          </label>
-          <label className="check" title="정해진 운용으로 안 깨지는 편성은 턴마다 누가 보구를 쏠지 바꿔 가며 다시 찾습니다. 서포터의 보구(제갈공명·알트리아 캐스터 같은 버프·디버프 보구 포함)를 쓰는 경우와 한 턴에 보구 2~3개를 함께 쏘는 경우가 여기에 들어갑니다. 끄면 계산이 2~3배 빨라지지만 찾는 편성이 줄어듭니다.">
-            <input type="checkbox" checked={prefs.npPlan ?? true} onChange={(e) => set('npPlan', e.target.checked)} /> 보구 조합 탐색 (서포터 보구 · 한 턴에 보구 여러 개)
-          </label>
-          <label className="check" title="등록한 내 서번트의 스킬을 전부 레벨 10으로 보고 계산합니다. 지금은 안 되지만 스킬을 올리면 되는 편성을 찾을 때 켭니다. 결과에 어떤 서번트의 스킬을 올려야 하는지 표시됩니다."><input type="checkbox" checked={!!prefs.maxSkill} onChange={(e) => set('maxSkill', e.target.checked)} /> 육성 가정: 내 서번트 스킬 전부 Lv10</label>
-          <label className="check" title="등록한 내 서번트가 어펜드 스킬 2(시작 NP 20%)와 어펜드 스킬 5 Lv10(쿨타임 -1)을 연 것으로 보고 계산합니다. 결과에 어떤 서번트의 어펜드를 열어야 하는지 표시됩니다."><input type="checkbox" checked={!!prefs.maxAppend} onChange={(e) => set('maxAppend', e.target.checked)} /> 육성 가정: 내 서번트 어펜드 2·5 개방</label>
-          <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 2 (시작 NP 20%)</label>
-          <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 5 (쿨타임 -1)</label>
-          <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 2를 열었는지. 빌리는 상대에 따라 다르니 실제 프렌드에 맞게 고르세요."><input type="checkbox" checked={prefs.fAppend2 ?? true} onChange={(e) => set('fAppend2', e.target.checked)} /> 프렌드: 어펜드 스킬 2 (시작 NP 20%)</label>
-          <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 5를 Lv10까지 올렸는지."><input type="checkbox" checked={prefs.fAppend5 ?? true} onChange={(e) => set('fAppend5', e.target.checked)} /> 프렌드: 어펜드 스킬 5 (쿨타임 -1)</label>
+        </div>
+        <div className="optgroups">
+          <div className="optgroup">
+            <span className="ohead"><span className="tag">탐색 범위</span></span>
+            <div className="opts">
+              <label className="check" title="프렌드로 내 파티에 있는 것과 같은 서번트를 빌리는 편성(예: 같은 딜러 2기, 같은 서포터 2기)을 후보에 넣습니다."><input type="checkbox" checked={prefs.allowDup} onChange={(e) => set('allowDup', e.target.checked)} /> 프렌드로 같은 서번트 빌리기</label>
+              <label className="check" title="정해진 운용으로 안 깨지는 편성은 턴마다 누가 보구를 쏠지 바꿔 가며 다시 찾습니다. 서포터의 보구(제갈공명·알트리아 캐스터 같은 버프·디버프 보구 포함)를 쓰는 경우와 한 턴에 보구 2~3개를 함께 쏘는 경우가 여기에 들어갑니다. 끄면 계산이 2~3배 빨라지지만 찾는 편성이 줄어듭니다."><input type="checkbox" checked={prefs.npPlan ?? true} onChange={(e) => set('npPlan', e.target.checked)} /> 보구 조합 탐색 (서포터 보구 · 한 턴에 여러 개)</label>
+              <label className="check" title="서포터 하나의 스킬을 다 쓴 뒤 후열의 다른 서포터와 바꾸는 편성도 찾습니다. 오더 체인지가 있는 마술예장(칼데아 전투복, 결전용 칼데아 제복)을 쓸 때만 적용됩니다. 계산이 조금 더 오래 걸립니다."><input type="checkbox" checked={!!prefs.oc} onChange={(e) => set('oc', e.target.checked)} /> 오더 체인지 (전투복·결전용 제복)</label>
+              <label className="check" title="령주 1획으로 아군 한 명의 NP를 100% 채우는 것을 허용합니다. 령주 없이 깨지는 편성에는 쓰지 않고, 령주를 써야만 되는 편성에는 결과에 표시합니다. 령주는 하루에 1획씩 회복됩니다."><input type="checkbox" checked={!!prefs.cs} onChange={(e) => set('cs', e.target.checked)} /> 령주 1획 (NP +100%)</label>
+            </div>
+          </div>
+          <div className="optgroup">
+            <span className="ohead"><span className="tag">미등록 서번트</span><span className="help" tabIndex={0} data-tip={'내 서번트 탭에 등록하지 않은 서번트입니다. 서번트 풀이 한국 전체 서번트일 때는 등록하지 않은 서번트도 내가 가진 것으로 보고 내 파티에 넣는데, 육성 상태를 알 수 없어서 여기서 정한 값으로 계산합니다. 프렌드(빌려 오는 서번트)와는 다릅니다. 등록한 서번트는 등록한 수치를 씁니다.\n\n한 줄 요약: 어지간하면 켜 두기'}>?</span></span>
+            <div className="opts">
+              <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 어펜드 2 (시작 NP 20%)</label>
+              <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 어펜드 5 (쿨타임 -1)</label>
+            </div>
+          </div>
+          <div className="optgroup">
+            <span className="ohead"><span className="tag">프렌드</span></span>
+            <div className="opts">
+              <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 2를 열었는지. 빌리는 상대에 따라 다르니 실제 프렌드에 맞게 고르세요."><input type="checkbox" checked={prefs.fAppend2 ?? true} onChange={(e) => set('fAppend2', e.target.checked)} /> 어펜드 2 (시작 NP 20%)</label>
+              <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 5를 Lv10까지 올렸는지."><input type="checkbox" checked={prefs.fAppend5 ?? true} onChange={(e) => set('fAppend5', e.target.checked)} /> 어펜드 5 (쿨타임 -1)</label>
+            </div>
+          </div>
+          <div className="optgroup">
+            <span className="ohead"><span className="tag">육성 가정 (내 서번트)</span></span>
+            <div className="opts">
+              <label className="check" title="등록한 내 서번트의 스킬을 전부 레벨 10으로 보고 계산합니다. 지금은 안 되지만 스킬을 올리면 되는 편성을 찾을 때 켭니다. 결과에 어떤 서번트의 스킬을 올려야 하는지 표시됩니다."><input type="checkbox" checked={!!prefs.maxSkill} onChange={(e) => set('maxSkill', e.target.checked)} /> 스킬 전부 Lv10</label>
+              <label className="check" title="등록한 내 서번트가 어펜드 스킬 2(시작 NP 20%)와 어펜드 스킬 5 Lv10(쿨타임 -1)을 연 것으로 보고 계산합니다. 결과에 어떤 서번트의 어펜드를 열어야 하는지 표시됩니다."><input type="checkbox" checked={!!prefs.maxAppend} onChange={(e) => set('maxAppend', e.target.checked)} /> 어펜드 2·5 개방</label>
+            </div>
+          </div>
+          <div className="optgroup">
+            <span className="ohead"><span className="tag">퀘스트 기믹</span></span>
+            <div className="opts">
+              <label className="check" title="2부 6장의 일부 전투처럼 출전 서번트 전원(프렌드 포함)의 레벨이 1이 되는 기믹. 스킬·보구 레벨은 그대로이고 ATK만 레벨 1 수치로 계산합니다."><input type="checkbox" checked={prefs.lv1} onChange={(e) => set('lv1', e.target.checked)} /> 전원 레벨 1 고정 (2부 6장)</label>
+            </div>
+          </div>
         </div>
         <MustPicker
           servants={prefs.poolMode === 'owned' ? data.servants.filter((s) => roster[s.no]?.owned) : data.servants}
