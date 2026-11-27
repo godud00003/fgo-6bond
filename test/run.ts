@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolveQuest, toQuestData } from '../src/engine/quest.ts';
+import { localizeNpc, resolveQuest, toQuestData } from '../src/engine/quest.ts';
 import { search, findCores, finishSearch, type PoolEntry, type CEStock } from '../src/engine/search.ts';
 import { simulate } from '../src/engine/sim.ts';
 import type { ActorCfg, BondCE, MysticCode, Rel, Servant, War } from '../src/engine/types.ts';
@@ -21,7 +21,8 @@ if (!fs.existsSync(cache)) {
   execFileSync('curl', ['-sS', '-m', '60', '-o', fileURLToPath(cache), `https://api.atlasacademy.io/nice/JP/quest/${c.quest.id}/${c.phase}`]);
 }
 const raw = JSON.parse(fs.readFileSync(cache, 'utf8'));
-const quest = toQuestData(raw, names, c.label);
+const quest = await localizeNpc(toQuestData(raw, names, c.label, servants));
+if (quest.npc) console.log('npc', quest.npc.svt.name, 'Lv', quest.npc.lv, 'ATK', quest.npc.atk, 'NP', quest.npc.npLv, quest.npc.svt.np?.name, '| skills', quest.npc.svt.skills.map((k, i) => `${k.name} Lv${quest.npc!.skillLvs[i]}`).join(', '), quest.npc.front ? '| 전열 고정' : '');
 console.log('bond', quest.bond, quest.warnings);
 quest.waves.forEach((w, i) => console.log(' wave', i + 1, w.map((e) => `${e.name}(${e.cls},${e.bars.join('/')})`).join(' ')));
 
@@ -56,8 +57,8 @@ const out = shards
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0, out.autoFriendCe !== undefined ? '| 프렌드 예장 자동: ' + out.autoFriendCe : '');
 for (const p of out.results) {
   console.log(`\n총 ${p.total} / ${p.turns}턴 / 코스트 ${p.cost}`);
-  console.log('  전열:', p.front.map((m) => `${m.svt.name}${m.friend ? '(프렌드)' : ''}[${m.role}${m.swapOut ? ',교체로 나감' : ''}] ${m.bond}`).join(' | '));
-  console.log('  후열:', p.back.map((m) => (m.svt ? `${m.svt.name}${m.friend ? '(프렌드)' : ''}${m.sub ? '[교체 투입]' : ''} ${m.bond}` : '(프렌드 자유)')).join(' | '));
+  console.log('  전열:', p.front.map((m) => `${m.svt.name}${m.npc ? '(지정 서포트)' : m.friend ? '(프렌드)' : ''}[${m.role}${m.swapOut ? ',교체로 나감' : ''}] ${m.bond}`).join(' | '));
+  console.log('  후열:', p.back.map((m) => (m.svt ? `${m.svt.name}${m.npc ? '(지정 서포트)' : m.friend ? '(프렌드)' : ''}${m.sub ? '[교체 투입]' : ''} ${m.bond}` : '(프렌드 자유)')).join(' | '));
   if (p.mc) console.log('  마술예장:', p.mc.name);
   console.log('  예장:', p.ces.map((c) => c.ce.name).join(', '));
 }

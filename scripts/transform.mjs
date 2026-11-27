@@ -27,13 +27,12 @@ export function triggerSkillIds(rawServants) {
 }
 
 /**
- * raw.files: SOURCES의 내부 이름 → 파싱된 JSON, raw.triggerSkills: 스킬 id → 스킬 JSON, now: 기준 시각(초).
- * 반환: { servants, ces, wars, mcs, boards, names, rel }
+ * 스킬·보구 변환기. triggerSkills: 스킬 id → 스킬 JSON(턴 종료 효과를 읽는 데 쓴다. 없으면 그 효과만 빠진다).
+ * 데이터 빌드와, 퀘스트가 지정한 서포트(NPC)의 스킬·보구를 앱에서 변환할 때 함께 쓴다.
  */
-export function transform(raw, now) {
+export function makeCompact(triggerSkills) {
   const ids = (list) => (list || []).map((t) => t.id);
 
-  // ---------- 서번트 ----------
   const BUFFS = new Set([
     'upAtk', 'downAtk', 'upCommandall', 'downCommandall', 'upNpdamage', 'downNpdamage', 'upDamage',
     'upDropnp', 'downDropnp', 'downDefence', 'upDefence', 'downDefencecommandall', 'regainNp',
@@ -57,7 +56,7 @@ export function transform(raw, now) {
 
   /** 턴 종료 효과를 시뮬레이터용으로 줄인다: NP 증감, 강화 해제, 행동 불능(영구수면) */
   function turnEndFx(id) {
-    const skill = raw.triggerSkills?.[id];
+    const skill = triggerSkills?.[id];
     if (!skill) return [];
     const out = [];
     for (const f of skill.functions || []) {
@@ -167,6 +166,32 @@ export function transform(raw, now) {
     return o;
   }
 
+  /** 보구 1개를 앱용으로 변환한다. */
+  function compactNp(n) {
+    const fn = n.functions.map((f) => compactFn(f, 5)).filter(Boolean);
+    const dmgFn = fn.find((f) => DAMAGE.has(f.t));
+    const np = {
+      name: n.name, card: { 1: 'arts', 2: 'buster', 3: 'quick' }[n.card] || n.card, gain: n.npGain.np[0], dist: n.npDistribution, fn,
+      dmg: !!dmgFn, aoe: dmgFn ? dmgFn.tg === 'enemyAll' : false,
+    };
+    // 보구 사용 후 퇴장: 자신이 죽거나(아라쉬 등), 다른 아군 1기를 제물로 쓴다(진궁)
+    const death = fn.find((f) => f.t === 'forceInstantDeath');
+    if (death) np.dies = death.tg === 'self' ? 'self' : 'ally';
+    return np;
+  }
+
+  return { ids, compactFn, compactSkill, compactNp };
+}
+
+/**
+ * raw.files: SOURCES의 내부 이름 → 파싱된 JSON, raw.triggerSkills: 스킬 id → 스킬 JSON, now: 기준 시각(초).
+ * 반환: { servants, ces, wars, mcs, boards, names, rel }
+ */
+export function transform(raw, now) {
+  const { ids, compactFn, compactSkill, compactNp } = makeCompact(raw.triggerSkills);
+
+  // ---------- 서번트 ----------
+
   // 기본 특성 + 나중에 추가된 상시 특성(traitAdd). 이벤트 한정·특정 재림 한정 특성은 뺀다.
   // 예: 어둠의 코얀스카야의 [짐승과의 서번트](2821)는 traitAdd에만 들어 있다.
   const buildSec = now;
@@ -203,18 +228,7 @@ export function transform(raw, now) {
       skills.push(compactSkill(k, 10));
     }
     let np = null;
-    if (s.noblePhantasms.length) {
-      const n = best(s.noblePhantasms);
-      const fn = n.functions.map((f) => compactFn(f, 5)).filter(Boolean);
-      const dmgFn = fn.find((f) => DAMAGE.has(f.t));
-      np = {
-        name: n.name, card: { 1: 'arts', 2: 'buster', 3: 'quick' }[n.card] || n.card, gain: n.npGain.np[0], dist: n.npDistribution, fn,
-        dmg: !!dmgFn, aoe: dmgFn ? dmgFn.tg === 'enemyAll' : false,
-      };
-      // 보구 사용 후 퇴장: 자신이 죽거나(아라쉬 등), 다른 아군 1기를 제물로 쓴다(진궁)
-      const death = fn.find((f) => f.t === 'forceInstantDeath');
-      if (death) np.dies = death.tg === 'self' ? 'self' : 'ally';
-    }
+    if (s.noblePhantasms.length) np = compactNp(best(s.noblePhantasms));
     const passive = [];
     for (const p of s.classPassive) {
       for (const f of p.functions) {

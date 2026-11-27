@@ -74,6 +74,8 @@ export interface ActorCfg {
   startNp: number;    // 시작 NP (10000 = 100%)
   role: 'dealer' | 'support' | 'filler' | 'master';
   friend?: boolean;
+  /** 퀘스트가 지정한 서포트(NPC). friend와 함께 켜진다. 클래스 스코어가 적용되지 않는다. */
+  npc?: boolean;
   /** 어펜드 스킬 5(스킬 재장전)의 남은 횟수: 스킬을 처음 쓸 때 쿨타임이 1 줄어든다(스킬마다 1회) */
   reload?: number;
   /** 후열에서 시작한다. 전열이 퇴장하거나 오더 체인지를 쓰면 들어온다. */
@@ -96,6 +98,18 @@ export interface EnemyDef {
   /** 이 적이 살아 있는 동안 빈자리에 불러내는 증원(순서대로, 반복 소환) */
   call?: EnemyDef[];
 }
+/** 퀘스트가 지정한 서포트(NPC): 프렌드 대신 반드시 이 서번트를 데려가야 한다. 예장은 없는 것으로 본다. */
+export interface NpcSupport {
+  /** 도감 데이터에 이 NPC의 스킬·보구를 덮어쓴 서번트(쓸 수 없는 스킬은 빠져 있다) */
+  svt: Servant;
+  lv: number; atk: number; npLv: number;
+  /** svt.skills와 같은 순서의 스킬 레벨 */
+  skillLvs: number[];
+  /** 전열에 고정된다(편성 화면에서 후열로 옮길 수 없다). 전투 중 오더 체인지로는 뺄 수 있다. */
+  front?: boolean;
+  /** 한국어 이름을 아직 받지 못한 스킬(svt.skills의 색인 → 스킬 id)과 보구 id */
+  jp?: { skills: [number, number][]; np?: number };
+}
 export interface QuestData {
   id: number; phase: number; name: string; bond: number; ap: number;
   fieldTraits: number[]; waves: EnemyDef[][]; warnings: string[];
@@ -105,6 +119,10 @@ export interface QuestData {
   waveSize?: number[];
   /** 웨이브별 진입 금지 자리(1부터). 처음부터 비워 두는 자리로, 대기 중인 적도 이 자리로는 들어오지 않는다 */
   waveNoEntry?: number[][];
+  /** 지정 서포트(NPC). 있으면 프렌드를 고를 수 없다. */
+  npc?: NpcSupport;
+  /** 내 파티에 넣을 수 없는 서번트(서번트 id) */
+  ban?: number[];
 }
 
 export interface TurnLog {

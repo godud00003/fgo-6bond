@@ -1,4 +1,5 @@
-import type { EnemyDef, QuestData, QuestRef, War } from './types.ts';
+import { makeCompact } from '../../scripts/transform.mjs';
+import type { EnemyDef, NP, NpcSupport, QuestData, QuestRef, Servant, Skill, War } from './types.ts';
 
 export interface Candidate { war: War; quest: QuestRef; phase: number; label: string; battleNo: number }
 
@@ -115,9 +116,88 @@ const ENEMY_PASSIVE = new Set(['upDefence', 'downDefence', 'downDefenceNpdamage'
 
 const API = 'https://api.atlasacademy.io';
 
+const compact = makeCompact();
+const sameSkill = (a: Skill, b: Skill | undefined) => !!b && JSON.stringify([a.cd, a.fn, a.init, a.needNp]) === JSON.stringify([b.cd, b.fn, b.init, b.needNp]);
+const sameNp = (a: NP, b: NP | null | undefined) => !!b && JSON.stringify({ ...a, name: '' }) === JSON.stringify({ ...b, name: '' });
+
+/**
+ * 지정 서포트(NPC) 한 기를 시뮬레이터용으로 옮긴다.
+ * NPC는 레벨·ATK·스킬 레벨·보구 레벨이 정해져 있고, 강화 전 스킬을 쓰거나 스킬이 덜 열려 있는 경우가 많다.
+ * 그래서 도감 데이터가 아니라 퀘스트에 실린 스킬·보구를 변환해 쓴다(지금 도감의 것과 같으면 한국어 이름이 있는 도감 것을 쓴다).
+ */
+function toNpc(s: any, names: Record<string, string>, servants: Servant[] | undefined, front: boolean): NpcSupport {
+  const base = servants?.find((x) => x.id === s.svt.id);
+  const jp: NonNullable<NpcSupport['jp']> = { skills: [] };
+  const skills: Skill[] = [], skillLvs: number[] = [];
+  for (const n of [1, 2, 3]) {
+    const raw = s.skills?.[`skill${n}`];
+    if (!raw || !s.skills[`skillId${n}`]) continue;
+    const k = compact.compactSkill(raw, 10) as Skill;
+    const known = base?.skills.find((b) => sameSkill(k, b));
+    if (!known) jp.skills.push([skills.length, raw.id]);
+    skills.push(known ?? k);
+    skillLvs.push(s.skills[`skillLv${n}`] || 1);
+  }
+  let np: NP | null = null;
+  const td = s.noblePhantasm?.noblePhantasm;
+  if (td && s.noblePhantasm.noblePhantasmId) {
+    const k = compact.compactNp(td) as NP;
+    if (sameNp(k, base?.np)) np = base!.np; else { np = k; jp.np = td.id; }
+  }
+  const name = names[s.svt.id] || base?.name || s.svt.name;
+  const svt: Servant = {
+    id: s.svt.id, no: s.svt.collectionNo, name, cls: s.svt.className, rarity: s.svt.rarity, cost: base?.cost ?? 0, attr: s.svt.attribute,
+    traits: base?.traits ?? (s.svt.traits || []).map((t: any) => t.id), atk: base?.atk ?? { 1: s.atk, max: s.atk, 100: s.atk, 120: s.atk },
+    skills, np, passive: base?.passive ?? [], face: base?.face ?? s.svt.face ?? '',
+  };
+  return { svt, lv: s.lv, atk: s.atk, npLv: s.noblePhantasm?.noblePhantasmLv || 1, skillLvs, front: front || undefined, jp: jp.skills.length || jp.np ? jp : undefined };
+}
+
+/** 지정 서포트의 스킬·보구 이름 중 일본어로 남은 것을 한국 서버 이름으로 바꾼다(받지 못하면 그대로 둔다). */
+export async function localizeNpc(q: QuestData): Promise<QuestData> {
+  const jp = q.npc?.jp;
+  if (!q.npc || !jp) return q;
+  const nameOf = async (path: string): Promise<string | undefined> => {
+    try { const r = await fetch(`${API}/nice/KR/${path}`); return r.ok ? (await r.json()).name : undefined; } catch { return undefined; }
+  };
+  const svt = { ...q.npc.svt, skills: q.npc.svt.skills.slice() };
+  await Promise.all([
+    ...jp.skills.map(async ([i, id]) => { const n = await nameOf(`skill/${id}`); if (n) svt.skills[i] = { ...svt.skills[i], name: n }; }),
+    (async () => { if (jp.np && svt.np) { const n = await nameOf(`NP/${jp.np}`); if (n) svt.np = { ...svt.np, name: n }; } })(),
+  ]);
+  return { ...q, npc: { ...q.npc, svt, jp: undefined } };
+}
+
 /** Atlas Academy 응답(일본 서버 전투 데이터)을 시뮬레이터 입력으로 변환한다. */
-export function toQuestData(raw: any, names: Record<string, string>, title?: string): QuestData {
+export function toQuestData(raw: any, names: Record<string, string>, title?: string, servants?: Servant[]): QuestData {
   const warnings: string[] = [];
+  // ---- 편성 제한: 지정 서포트(NPC), 서포트 자리 고정, 편성 금지 서번트
+  const restr: { type: string; rangeType: string; targetVals: number[] }[] = (raw.restrictions || []).map((r: any) => r.restriction);
+  const sups: any[] = raw.supportServants || [];
+  let npc: NpcSupport | undefined;
+  if (raw.isNpcOnly && sups.length) {
+    const fix = restr.find((r) => r.type === 'fixedSupportPosition');
+    const front = !!fix && fix.targetVals.length > 0 && fix.targetVals.every((p) => p <= 3);
+    npc = toNpc(sups[0], names, servants, front);
+    warnings.push(`지정 서포트 전투입니다: 프렌드 대신 ${npc.svt.name}(Lv.${npc.lv}, 보구 Lv.${npc.npLv}, 예장 없음)을(를) 데려가야 합니다. 프렌드 관련 설정은 적용되지 않습니다.`);
+    if (front) warnings.push('지정 서포트는 전열에 고정됩니다. 전투 중 오더 체인지로는 후열과 바꿀 수 있습니다("오더 체인지 사용"을 켜면 그 편성도 찾습니다).');
+    if (sups.length > 1) warnings.push(`지정 서포트 후보가 ${sups.length}기입니다. 첫 번째(${npc.svt.name})를 고른 것으로 계산합니다.`);
+  }
+  const ban = [...new Set(restr.filter((r) => r.type === 'individuality' && r.rangeType === 'notEqual').flatMap((r) => r.targetVals))];
+  if (ban.length) {
+    const who = ban.map((id) => names[id] || servants?.find((x) => x.id === id)?.name || `#${id}`).join(', ');
+    warnings.push(`이 전투에는 ${who}을(를) 내 파티에 넣을 수 없습니다.`);
+  }
+  const flags: string[] = raw.flags || [];
+  const odd = [
+    flags.some((f) => f === 'supportOnlyBattle' || f === 'supportOnlyForceBattle') && '서포트만 출전',
+    flags.includes('userEventDeck') && '전용 편성',
+    restr.some((r) => r.type === 'svtNum' || r.type === 'mySvtNum') && '출전 인원 제한',
+    restr.some((r) => r.type === 'mySvtOrNpc') && '특정 서번트 필수(내 서번트 또는 NPC)',
+    flags.includes('disableMasterSkill') && '마스터 스킬 사용 불가',
+  ].filter(Boolean);
+  if (odd.length) warnings.push(`이 전투에는 계산에 반영하지 못한 편성 제한이 있습니다: ${odd.join(', ')}. 결과가 실제와 다를 수 있습니다.`);
+
   const waves: EnemyDef[][] = [];
   const waveCalls: EnemyDef[][] = [];
   const waveSize: number[] = [];
@@ -186,11 +266,12 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
     waveCalls: waveCalls.some((c) => c.length) ? waveCalls : undefined,
     waveSize: waveSize.some((n) => n !== 3) ? waveSize : undefined,
     waveNoEntry: waveNoEntry.some((l) => l.length) ? waveNoEntry : undefined,
+    npc, ban: ban.length ? ban : undefined,
   };
 }
 
-export async function fetchQuest(id: number, phase: number, names: Record<string, string>, title?: string): Promise<QuestData> {
+export async function fetchQuest(id: number, phase: number, names: Record<string, string>, title?: string, servants?: Servant[]): Promise<QuestData> {
   const res = await fetch(`${API}/nice/JP/quest/${id}/${phase}`);
   if (!res.ok) throw new Error(`퀘스트 데이터를 받지 못했습니다 (HTTP ${res.status})`);
-  return toQuestData(await res.json(), names, title);
+  return localizeNpc(toQuestData(await res.json(), names, title, servants));
 }

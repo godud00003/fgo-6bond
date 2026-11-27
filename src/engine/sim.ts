@@ -105,7 +105,7 @@ function setLabels(lineup: ActorCfg[]) {
     let label = c.svt.name;
     // 이름만 같은 다른 서번트(예: 세이버와 랜서 알트리아)는 클래스를 붙인다
     if (twins.some((x) => x.svt.no !== c.svt.no)) label += `[${CLASS_LABEL[c.svt.cls] ?? c.svt.cls}]`;
-    if (c.friend) label += '(프렌드)';
+    if (c.friend) label += c.npc ? '(지정 서포트)' : '(프렌드)';
     labels.set(c, label);
   }
 }
@@ -846,7 +846,7 @@ function initState(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra 
   for (const a of [...s.actors, ...s.bench]) for (const fn of a.cfg.svt.passive) applyFn(s, a, fn, 0, a);
   // 클래스 스코어: 그 클래스 서번트에게 전투 내내 걸리는 카드 위력·보구 위력 UP
   for (const a of [...s.actors, ...s.bench]) {
-    const sc = (a.cfg.friend ? opt.friendScore : opt.score)?.[a.cfg.svt.cls];
+    const sc = (a.cfg.npc ? undefined : a.cfg.friend ? opt.friendScore : opt.score)?.[a.cfg.svt.cls];
     if (!sc) continue;
     SCORE_CARD.forEach((card, i) => { if (sc[i]) a.buffs.push({ t: 'upCommandall', val: sc[i], turn: -1, count: -1, d: { t: 'upCommandall', cs: [card] } }); });
     if (sc[3]) a.buffs.push({ t: 'upNpdamage', val: sc[3], turn: -1, count: -1, d: { t: 'upNpdamage' } });
@@ -1207,7 +1207,7 @@ function npSupplyBy(front: ActorCfg[], q: { td3: number; td1: number }, T: numbe
     const np = c.svt.np!;
     // 보구 한 번의 NP 회수 상한: 걸릴 수 있는 버프가 모두 걸리고 모든 히트가 오버킬
     let card = 0, gain = 0;
-    const sc = (c.friend ? extra.friendScore : extra.score)?.[c.svt.cls];
+    const sc = (c.npc ? undefined : c.friend ? extra.friendScore : extra.score)?.[c.svt.cls];
     if (sc) card += (sc[SCORE_CARD.indexOf(CARD_TRAIT[np.card])] ?? 0) / 1000;
     for (const b of cardBuffs) {
       if (b.self && b.self !== c) continue;

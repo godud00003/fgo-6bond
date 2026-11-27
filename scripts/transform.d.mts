@@ -2,6 +2,12 @@
 export const SOURCES: Record<string, string>;
 export const API: string;
 export function triggerSkillIds(rawServants: unknown[]): number[];
+/** 스킬·보구 변환기(원본 Atlas JSON → 앱 형식). 반환값의 형식은 src/engine/types.ts 의 Skill·NP·Fn 과 같다. */
+export function makeCompact(triggerSkills?: Record<number, unknown>): {
+  compactFn(f: unknown, levels: number): unknown;
+  compactSkill(k: unknown, levels: number): unknown;
+  compactNp(n: unknown): unknown;
+};
 export function transform(
   raw: { files: Record<string, unknown>; triggerSkills: Record<number, unknown> },
   now: number,
