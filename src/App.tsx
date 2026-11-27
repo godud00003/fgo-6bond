@@ -13,6 +13,8 @@ import { boardScore, importLogin, type Roster, type RosterEntry, type Stock } fr
 interface Prefs {
   poolMode: 'all' | 'owned'; maxTurns: number; costCap: number; roll: number; append2: boolean; append5: boolean; fAppend2: boolean; fAppend5: boolean; fou: number;
   friendCe: string; np5: number; np4: number; np3: number; teapot: number; mc: number; cardNp: number; lv1: boolean; allowDup: boolean; must: number[]; oc: boolean; cs: boolean; npPlan: boolean; autoUpdate: boolean;
+  /** 내 서번트를 스킬 레벨 10 / 어펜드 2·5 개방으로 가정하고 계산한다(육성하면 되는 편성 찾기) */
+  maxSkill?: boolean; maxAppend?: boolean;
   /** 클래스 스코어: 내 것(없음 / 전부 개방 / 가져온 데이터), 프렌드 것, 가져온 판별 수치 */
   score: 'none' | 'full' | 'own'; fScore: 'none' | 'full'; scoreOwn?: Record<number, number[]>;
 }
@@ -154,8 +156,10 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
     // 재림 단계에 따라 특성이 달라지는 서번트는 등록한 단계의 특성으로 판정한다
     const stage = useOwn && svt.asc ? svt.asc[r.asc ?? 4] : undefined;
     out.push({
-      svt: stage ? { ...svt, traits: stage } : svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn ? r.skillLv : 10,
-      skillLvs: useOwn ? r.skills : undefined, startNp: useOwn ? r.startNp : undefined, reload: useOwn ? r.reload : undefined,
+      svt: stage ? { ...svt, traits: stage } : svt, npLv: useOwn ? r.npLv : npDefault, skillLv: useOwn && !prefs.maxSkill ? r.skillLv : 10,
+      skillLvs: useOwn && !prefs.maxSkill ? r.skills : undefined,
+      // 육성 가정: 어펜드 2(시작 NP 20%)와 어펜드 5 Lv10(재장전 3회)을 연 것으로 본다
+      startNp: !useOwn ? undefined : prefs.maxAppend ? Math.max(r.startNp ?? 0, 2000) : r.startNp, reload: !useOwn ? undefined : prefs.maxAppend ? 3 : r.reload,
       // 레벨 1 고정 퀘스트: 레벨 1 ATK + 포우 강화(가져온 서번트는 실제 강화량)
       atk: prefs.lv1 ? svt.atk[1] + (useOwn && r.fou !== undefined ? r.fou : prefs.fou)
         : useOwn && r.atk ? r.atk : svt.atk[useOwn ? r.lv : 'max'] + prefs.fou, weight: useOwn && (r.bondMax || r.bond15) ? 0 : 1, bond15: useOwn && !!r.bond15,
@@ -397,6 +401,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
           <label className="check" title="정해진 운용으로 안 깨지는 편성은 턴마다 누가 보구를 쏠지 바꿔 가며 다시 찾습니다. 서포터의 보구(제갈공명·알트리아 캐스터 같은 버프·디버프 보구 포함)를 쓰는 경우와 한 턴에 보구 2~3개를 함께 쏘는 경우가 여기에 들어갑니다. 끄면 계산이 2~3배 빨라지지만 찾는 편성이 줄어듭니다.">
             <input type="checkbox" checked={prefs.npPlan ?? true} onChange={(e) => set('npPlan', e.target.checked)} /> 보구 조합 탐색 (서포터 보구 · 한 턴에 보구 여러 개)
           </label>
+          <label className="check" title="등록한 내 서번트의 스킬을 전부 레벨 10으로 보고 계산합니다. 지금은 안 되지만 스킬을 올리면 되는 편성을 찾을 때 켭니다. 결과에 어떤 서번트의 스킬을 올려야 하는지 표시됩니다."><input type="checkbox" checked={!!prefs.maxSkill} onChange={(e) => set('maxSkill', e.target.checked)} /> 육성 가정: 내 서번트 스킬 전부 Lv10</label>
+          <label className="check" title="등록한 내 서번트가 어펜드 스킬 2(시작 NP 20%)와 어펜드 스킬 5 Lv10(쿨타임 -1)을 연 것으로 보고 계산합니다. 결과에 어떤 서번트의 어펜드를 열어야 하는지 표시됩니다."><input type="checkbox" checked={!!prefs.maxAppend} onChange={(e) => set('maxAppend', e.target.checked)} /> 육성 가정: 내 서번트 어펜드 2·5 개방</label>
           <label className="check"><input type="checkbox" checked={prefs.append2} onChange={(e) => set('append2', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 2 (시작 NP 20%)</label>
           <label className="check" title="스킬 재장전 Lv10: 스킬마다 처음 쓸 때 쿨타임이 1 줄어듭니다. 로그인 데이터로 가져온 서번트는 실제 레벨을 쓰고, 등록하지 않은 서번트와 프렌드에만 이 설정을 적용합니다."><input type="checkbox" checked={prefs.append5 ?? true} onChange={(e) => set('append5', e.target.checked)} /> 미등록 서번트: 어펜드 스킬 5 (쿨타임 -1)</label>
           <label className="check" title="프렌드로 빌리는 서번트가 어펜드 스킬 2를 열었는지. 빌리는 상대에 따라 다르니 실제 프렌드에 맞게 고르세요."><input type="checkbox" checked={prefs.fAppend2 ?? true} onChange={(e) => set('fAppend2', e.target.checked)} /> 프렌드: 어펜드 스킬 2 (시작 NP 20%)</label>
@@ -442,7 +448,7 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               {output.bestFail && <p>가장 근접한 조합: {output.bestFail.names.join(' + ')} — 적 {output.bestFail.sim.total}기 중 {output.bestFail.sim.killed}기 처치{output.bestFail.sim.bars > output.bestFail.sim.total ? `, HP 게이지 ${output.bestFail.sim.bars}줄 중 ${output.bestFail.sim.broken}줄 파괴` : ''}</p>}
             </div>
           )}
-          {output.results.map((r, i) => <Result key={i} r={r} rank={i + 1} base={quest.bond} />)}
+          {output.results.map((r, i) => <Result key={i} r={r} rank={i + 1} base={quest.bond} raise={raiseList(r, roster, prefs)} />)}
         </section>
       )}
     </main>
@@ -491,7 +497,29 @@ function Face({ src, name }: { src: string; name: string }) {
   return src ? <img className="face" src={src} alt="" loading="lazy" /> : <span className="face ph">{name.slice(0, 1)}</span>;
 }
 
-function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number }) {
+/** 육성 가정으로 계산했을 때, 이 편성의 딜러·서포터 중 실제 육성이 가정에 못 미치는 서번트와 올려야 할 것 */
+function raiseList(r: PartyResult, roster: Roster, prefs: Prefs): { name: string; todo: string[] }[] {
+  if (!prefs.maxSkill && !prefs.maxAppend) return [];
+  const out: { name: string; todo: string[] }[] = [];
+  for (const m of [...r.front, ...r.back]) {
+    if (!m.svt || m.friend || m.role === 'filler') continue;
+    const ro = roster[m.svt.no];
+    if (!ro?.owned) continue;
+    const todo: string[] = [];
+    if (prefs.maxSkill) {
+      const lv = ro.skills ?? [ro.skillLv, ro.skillLv, ro.skillLv];
+      if (lv.some((x) => x < 10)) todo.push(`스킬 ${lv.join('/')} → 10/10/10`);
+    }
+    if (prefs.maxAppend) {
+      if ((ro.startNp ?? (prefs.append2 ? 2000 : 0)) < 2000) todo.push('어펜드 2 (시작 NP 20%)');
+      if ((ro.reload ?? ((prefs.append5 ?? true) ? 3 : 0)) < 3) todo.push('어펜드 5 Lv10');
+    }
+    if (todo.length) out.push({ name: m.svt.name, todo });
+  }
+  return out;
+}
+
+function Result({ r, rank, base, raise }: { r: PartyResult; rank: number; base: number; raise: { name: string; todo: string[] }[] }) {
   const [open, setOpen] = useState(rank === 1);
   // 게임의 편성 화면처럼 한 칸에 서번트와 그 서번트가 끼는 예장을 함께 보여 준다
   const member = (m: PartyResult['front'][0], k: number, pos: number) => (
@@ -536,6 +564,13 @@ function Result({ r, rank, base }: { r: PartyResult; rank: number; base: number 
         ) : <span className="small muted">아무거나 (마술예장 스킬 없이 클리어)</span>}
         {r.cs && <span className="ce need">령주 1획 사용 (NP +100%)</span>}
       </div>
+      {raise.length > 0 && (
+        <div className="line">
+          <span className="tag">육성 필요</span>
+          <span className="small">{raise.map((x) => `${x.name}: ${x.todo.join(', ')}`).join(' · ')}</span>
+          <span className="small muted">육성 가정으로 계산한 편성입니다. 여기 적힌 것이 지금 계정과 다른 부분입니다.</span>
+        </div>
+      )}
       {open && (
         <div className="log">
           <p className="small muted">
