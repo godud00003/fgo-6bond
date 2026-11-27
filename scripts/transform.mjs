@@ -12,6 +12,8 @@ export const SOURCES = {
   'JP_NiceClassRelation.json': 'export/JP/NiceClassRelation.json',
   'JP_NiceClassAttackRate.json': 'export/JP/NiceClassAttackRate.json',
   'JP_NiceAttributeRelation.json': 'export/JP/NiceAttributeRelation.json',
+  'KR_basic_event.json': 'export/KR/basic_event.json',
+  'JP_basic_event.json': 'export/JP/basic_event.json',
 };
 export const API = 'https://api.atlasacademy.io/';
 
@@ -24,6 +26,27 @@ export function triggerSkillIds(rawServants) {
     }
   }
   return [...need];
+}
+
+/**
+ * 한국 서버에 아직 열리지 않은 다음 이벤트 후보를 일본 서버 개최 순으로 돌려준다(따로 받아야 한다: nice/JP/war/{id}).
+ * 한국 서버는 일본 서버의 이벤트 일정을 따라가므로, 한국에 마지막으로 열린 이벤트보다 일본에서 늦게 열린 이벤트가 다음 차례다.
+ * est: 한국 서버 예상 개시 시각(초). 최근 이벤트들의 한일 시차(중앙값)를 일본 개시 시각에 더한 값이다.
+ */
+export function upcomingEvents(files, max = 3) {
+  const kr = files['KR_basic_event.json'], jp = files['JP_basic_event.json'];
+  if (!Array.isArray(kr) || !Array.isArray(jp)) return [];
+  // 이벤트 워(8000번대 이상)가 딸린 이벤트만 본다. 캠페인이나 메인 스토리 개방은 뺀다.
+  const ok = (e) => e.type === 'eventQuest' && (e.warIds || []).some((id) => id >= 8000);
+  const jpOf = new Map(jp.map((e) => [e.id, e]));
+  const done = kr.filter((e) => ok(e) && jpOf.has(e.id)).sort((a, b) => a.startedAt - b.startedAt);
+  if (!done.length) return [];
+  const lastJp = Math.max(...done.map((e) => jpOf.get(e.id).startedAt));
+  const gaps = done.slice(-9).map((e) => e.startedAt - jpOf.get(e.id).startedAt).sort((a, b) => a - b);
+  const gap = gaps[gaps.length >> 1];
+  const have = new Set(kr.map((e) => e.id));
+  return jp.filter((e) => ok(e) && !have.has(e.id) && e.startedAt > lastJp).sort((a, b) => a.startedAt - b.startedAt).slice(0, max)
+    .map((e) => ({ id: e.id, name: e.name.replace(/\s+/g, ' ').trim(), warIds: e.warIds.filter((id) => id >= 8000), est: e.startedAt + gap }));
 }
 
 /**
@@ -185,6 +208,7 @@ export function makeCompact(triggerSkills) {
 
 /**
  * raw.files: SOURCES의 내부 이름 → 파싱된 JSON, raw.triggerSkills: 스킬 id → 스킬 JSON, now: 기준 시각(초).
+ * raw.upcoming: [{ event: upcomingEvents()의 항목, wars: 그 이벤트의 일본 서버 워 JSON 목록 }] (없어도 된다).
  * 반환: { servants, ces, wars, mcs, boards, names, rel }
  */
 export function transform(raw, now) {
@@ -332,6 +356,22 @@ export function transform(raw, now) {
     quests.sort((a, b) => a.id - b.id);
     const longName = w.id === DAILY_WAR ? '칼데아 게이트 요일 퀘스트' : isEvent ? `이벤트 ${(w.longName || w.name).replace(/\n/g, ' ')}` : w.longName.replace(/\n/g, ' ');
     wars.push({ id: w.id, name: w.name, longName, quests });
+  }
+  // 한국 서버에 아직 열리지 않은 다음 이벤트: 후보 중 반복해서 돌 수 있는 퀘스트가 있는 첫 이벤트 하나만 넣는다.
+  // 한국어 데이터가 없으므로 이름은 일본어 그대로다. 기간은 담지 않는다(한국에 열리면 한국 데이터의 것으로 바뀐다).
+  for (const u of raw.upcoming || []) {
+    const quests = [];
+    for (const w of u.wars || []) for (const sp of w.spots || []) for (const q of sp.quests) {
+      if (q.afterClear !== 'repeatLast' || !q.phases.length) continue;
+      quests.push({
+        id: q.id, type: 'free', name: q.name.trim(), spot: sp.name, chapter: 0, sub: 0, subStr: '', phases: q.phases,
+        noBattle: q.phasesNoBattle || [], ap: q.consume, lv: q.recommendLv || '',
+      });
+    }
+    if (!quests.length || !u.wars?.length || wars.some((w) => w.id === u.wars[0].id)) continue;
+    quests.sort((a, b) => a.id - b.id);
+    wars.push({ id: u.wars[0].id, name: u.event.name, longName: `오픈 전 이벤트 ${u.event.name}`, quests, soon: u.event.est });
+    break;
   }
   for (const [id, name, quests] of [[RANKUP_WAR, '강화 퀘스트', rankups], [INTERLUDE_WAR, '막간의 이야기', interludes]]) {
     if (!quests.length) continue;

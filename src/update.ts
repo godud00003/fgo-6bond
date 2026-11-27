@@ -1,9 +1,11 @@
 // 게임 데이터 자동 업데이트: Atlas Academy에 새 한국 서버 데이터가 올라오면 브라우저에서 직접 받아 변환하고,
 // 결과를 이 브라우저(IndexedDB)에 저장한다. 변환 로직은 빌드 스크립트와 같은 것을 쓴다.
-import { API, SOURCES, transform, triggerSkillIds } from '../scripts/transform.mjs';
+import { API, SOURCES, transform, triggerSkillIds, upcomingEvents } from '../scripts/transform.mjs';
 import type { BondCE, ClassBoard, MysticCode, Rel, Servant, War } from './engine/types.ts';
 
-export interface Meta { kr: { hash: string; timestamp: number }; builtAt: number }
+export interface Meta { kr: { hash: string; timestamp: number }; builtAt: number; /** 브라우저에 저장한 데이터의 형식 번호 */ fmt?: number }
+/** 저장 데이터 형식. 변환 결과에 담는 내용이 늘면 올린다(예전 형식으로 저장된 데이터는 쓰지 않는다). 2: 오픈 전 이벤트 */
+export const DATA_FMT = 2;
 export interface Dataset { servants: Servant[]; ces: BondCE[]; wars: War[]; names: Record<string, string>; rel: Rel; mcs: MysticCode[]; boards: ClassBoard[]; meta: Meta }
 
 /** Atlas가 알려 주는 한국 서버 데이터의 최신 버전 */
@@ -30,10 +32,20 @@ export async function buildDataset(onProgress: (text: string) => void): Promise<
     const res = await fetch(`${API}nice/JP/skill/${id}`);
     if (res.ok) triggerSkills[id] = await res.json();
   }
+  // 한국 서버에 아직 열리지 않은 다음 이벤트의 퀘스트 목록(일본 서버 데이터)
+  const upcoming: { event: unknown; wars: unknown[] }[] = [];
+  for (const event of upcomingEvents(files)) {
+    const wars: unknown[] = [];
+    for (const id of event.warIds) {
+      const res = await fetch(`${API}nice/JP/war/${id}`);
+      if (res.ok) wars.push(await res.json());
+    }
+    upcoming.push({ event, wars });
+  }
   onProgress('변환하는 중');
   const now = Math.floor(Date.now() / 1000);
-  const out = transform({ files, triggerSkills }, now) as unknown as Omit<Dataset, 'meta'>;
-  return { ...out, meta: { kr, builtAt: now } };
+  const out = transform({ files, triggerSkills, upcoming }, now) as unknown as Omit<Dataset, 'meta'>;
+  return { ...out, meta: { kr, builtAt: now, fmt: DATA_FMT } };
 }
 
 // ---- 저장(IndexedDB). 데이터가 수 MB라 localStorage에는 넣을 수 없다.

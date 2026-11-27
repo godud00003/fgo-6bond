@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 // 인라인 워커: 파일을 직접 열어도(file://) 동작하도록 워커 코드를 번들 안에 넣는다
 import SearchWorker from './worker.ts?worker&inline';
 import UpdateWorker from './update.worker.ts?worker&inline';
-import { latestKr, loadCached, saveCached, type Dataset } from './update.ts';
+import { DATA_FMT, latestKr, loadCached, saveCached, type Dataset } from './update.ts';
 import { fetchQuest, namuQuery, resolveQuest, type Candidate } from './engine/quest.ts';
 import type { CEStock, CorePart, PartyResult, PoolEntry, SearchOutput, Settings } from './engine/search.ts';
 import type { BondCE, MysticCode, QuestData, Rel, Servant, War } from './engine/types.ts';
@@ -66,8 +66,8 @@ export default function App() {
       if (!b.meta) b.meta = { kr: { hash: '', timestamp: 0 }, builtAt: 0 };
       // 이전에 이 브라우저에서 받아 둔 더 새로운 데이터가 있으면 그것을 쓴다
       const cached = await loadCached();
-      // 예전 형식(클래스 스코어 없음, 강화 퀘스트·막간의 이야기 없음)으로 저장된 데이터는 쓰지 않는다
-      const cur = cached && cached.boards && cached.wars.some((w) => w.id === 1001) && cached.meta.kr.timestamp > b.meta.kr.timestamp ? cached : b;
+      // 예전 형식(오픈 전 이벤트 없음 등)으로 저장된 데이터는 쓰지 않는다
+      const cur = cached && cached.meta.fmt === DATA_FMT && cached.meta.kr.timestamp > b.meta.kr.timestamp ? cached : b;
       setData(cur);
       if (prefs.autoUpdate ?? true) void checkUpdate(cur, false);
     }).catch((e) => setError(String(e)));
@@ -294,6 +294,11 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               기본 인연 포인트 <b>{quest.bond.toLocaleString()}</b> · AP {picked.quest.ap} ·{' '}
               <a href={`https://namu.wiki/Search?q=${encodeURIComponent(namuQuery(picked.war.longName))}`} target="_blank" rel="noreferrer">나무위키에서 이 장 찾기</a>
             </p>
+            {picked.war.soon !== undefined && (
+              <p className="warn">
+                한국 서버에 아직 열리지 않은 이벤트입니다(예상 {new Date(picked.war.soon * 1000).toLocaleDateString('ko-KR')}경). 일본 서버 데이터라 이름이 일본어로 나오고, 한국 서버에서는 내용이나 일정이 달라질 수 있습니다.
+              </p>
+            )}
             {quest.warnings.map((w) => <p key={w} className="warn">{w}</p>)}
             {quest.waves.map((wave, i) => (
               <div key={i} className="wave">

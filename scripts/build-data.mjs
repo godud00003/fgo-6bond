@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { API, SOURCES, transform, triggerSkillIds } from './transform.mjs';
+import { API, SOURCES, transform, triggerSkillIds, upcomingEvents } from './transform.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = path.join(root, 'data');
@@ -28,7 +28,26 @@ if (download) {
 }
 
 const files = {};
-for (const file of Object.keys(SOURCES)) files[file] = JSON.parse(fs.readFileSync(path.join(dataDir, file), 'utf8'));
+for (const file of Object.keys(SOURCES)) {
+  const p = path.join(dataDir, file);
+  // 이벤트 목록은 나중에 추가된 원본이라 아직 받지 않았을 수 있다(없으면 다음 이벤트만 빠진다)
+  if (fs.existsSync(p) || !/basic_event/.test(file)) files[file] = JSON.parse(fs.readFileSync(p, 'utf8'));
+}
+// 한국 서버에 아직 열리지 않은 다음 이벤트: 일본 서버의 워 데이터를 data/upcoming.json 에 받아 둔다
+const upFile = path.join(dataDir, 'upcoming.json');
+if (download) {
+  const upcoming = [];
+  for (const event of upcomingEvents(files)) {
+    const wars = [];
+    for (const id of event.warIds) {
+      const res = await fetch(`${API}nice/JP/war/${id}`);
+      if (res.ok) wars.push(await res.json()); else console.warn('upcoming war', id, 'HTTP', res.status);
+    }
+    upcoming.push({ event, wars });
+  }
+  fs.writeFileSync(upFile, JSON.stringify(upcoming));
+}
+const upcoming = fs.existsSync(upFile) ? JSON.parse(fs.readFileSync(upFile, 'utf8')) : [];
 // 턴 종료 발동 스킬: data/skills/{id}.json 에 받아 둔다(--download 일 때만 네트워크 사용)
 const triggerSkills = {};
 for (const id of triggerSkillIds(files['KR_nice_servant.json'])) {
@@ -40,7 +59,7 @@ for (const id of triggerSkillIds(files['KR_nice_servant.json'])) {
   if (fs.existsSync(file)) triggerSkills[id] = JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-const out = transform({ files, triggerSkills }, Date.now() / 1000);
+const out = transform({ files, triggerSkills, upcoming }, Date.now() / 1000);
 const write = (f, v) => {
   const s = JSON.stringify(v);
   fs.writeFileSync(path.join(outDir, f), s);

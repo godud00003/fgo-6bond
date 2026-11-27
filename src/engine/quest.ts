@@ -25,8 +25,10 @@ function battles(war: War, quests: QuestRef[]): Candidate[] {
   const perSection = new Map<string, number>();
   const now = Date.now() / 1000;
   for (const q of quests) {
-    // 기간 한정 퀘스트는 지금 열려 있는 것만 보여 준다
-    if (q.open && (now < q.open[0] || now >= q.open[1])) continue;
+    // 기간 한정 퀘스트는 끝난 것을 빼고, 요일 퀘스트는 지금 열려 있는 것만 보여 준다.
+    // 이벤트 퀘스트는 데이터에 먼저 들어와 있으면 열리기 전이라도 보여 준다.
+    if (q.open && (now >= q.open[1] || (now < q.open[0] && war.id < 8000))) continue;
+    const early = !!q.open && now < q.open[0];
     const key = q.type === 'main' ? `${q.chapter}-${q.sub}` : `q${q.id}`;
     for (const phase of q.phases) {
       if (q.noBattle.includes(phase)) continue;
@@ -36,7 +38,7 @@ function battles(war: War, quests: QuestRef[]): Candidate[] {
       const title = q.name || q.spot;
       out.push({
         war, quest: q, phase, battleNo: n,
-        label: `${war.longName} · ${sec ? sec + ' ' : ''}${title}${q.phases.length > 1 ? ` · ${n}번째 배틀` : ''}`,
+        label: `${early ? '오픈 전 ' : ''}${war.longName} · ${sec ? sec + ' ' : ''}${title}${q.phases.length > 1 ? ` · ${n}번째 배틀` : ''}`,
       });
     }
   }
@@ -54,6 +56,8 @@ export function resolveQuest(query: string, wars: War[]): Resolved {
   const chap = q.match(/(\d+(?:\.\d+)?)\s*장/);
   const partKey = part ? part[1] : /주장/.test(q) ? '3' : null;
   for (const [re, id] of ALIASES) if (re.test(q)) warIds.push(id);
+  // "오픈 전", "다음 이벤트": 한국 서버에 아직 열리지 않은 다음 이벤트
+  if (/오픈\s*전|다음\s*이벤트|미개방/.test(q)) warIds.push(...wars.filter((w) => w.soon !== undefined).map((w) => w.id));
   if (!warIds.length && partKey) {
     const ch = /서장/.test(q) ? '0' : /종장/.test(q) ? '8' : chap?.[1];
     if (ch !== undefined) {
@@ -85,7 +89,7 @@ export function resolveQuest(query: string, wars: War[]): Resolved {
     // 문장부호는 검색어와 퀘스트명 양쪽에서 지운다("칼데아 게이트-종화 수집 극급" ↔ "종화 수집<살・창 편>《극급》")
     const plain = (s: string) => norm(s.replace(PUNCT, ''));
     const words = q.replace(PUNCT, ' ').split(/\s+/).map(norm)
-      .filter((w) => w && !/^(\d+(\.\d+)?부|\d+(\.\d+)?장|프리|퀘스트|배틀|전투|\d+번째|칼데아|게이트|요일|강화|강퀘|막간의?|이야기|인연퀘(스트)?|인연|인터루드)$/.test(w));
+      .filter((w) => w && !/^(\d+(\.\d+)?부|\d+(\.\d+)?장|프리|퀘스트|배틀|전투|\d+번째|칼데아|게이트|요일|강화|강퀘|막간의?|이야기|인연퀘(스트)?|인연|인터루드|오픈|전|다음|이벤트|미개방)$/.test(w));
     const stripped = words.filter((w) => !scope.some((s) => warIds.includes(s.id) && longNameHit(s, w)));
     if (stripped.length) {
       const hit = cands.filter((c) => stripped.every((w) => plain(c.quest.name + c.quest.spot).includes(w)));

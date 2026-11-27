@@ -57,7 +57,11 @@ export interface QuestRef {
   /** 강화 퀘스트·막간의 이야기: 반드시 편성해야 하는 서번트(도감 번호) */
   svt?: number;
 }
-export interface War { id: number; name: string; longName: string; quests: QuestRef[] }
+export interface War {
+  id: number; name: string; longName: string; quests: QuestRef[];
+  /** 한국 서버에 아직 열리지 않은 다음 이벤트(일본 서버 데이터). 값은 한국 서버 예상 개시 시각(초). */
+  soon?: number;
+}
 export interface Rel {
   classRelation: Record<string, Record<string, number>>;
   classAttack: Record<string, number>;
