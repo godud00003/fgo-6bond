@@ -262,7 +262,32 @@ export function transform(raw, now) {
   const wars = [];
   const DAILY_WAR = 1002; // 칼데아 게이트의 요일 퀘스트(종화 수집, 수련장, 보물창고)
   const nowSec = now;
+  // 강화 퀘스트(워 1001 전부)와 막간의 이야기(type friendship: 워 1003과 각 장의 지점에 흩어져 있다)는 따로 모아 워 하나씩으로 만든다.
+  // 둘 다 해당 서번트를 편성해야 하므로 그 서번트(개방 조건의 svtGet)의 도감 번호를 함께 담는다.
+  const RANKUP_WAR = 1001, INTERLUDE_WAR = 1003;
+  const svtOf = new Map(raw.files['KR_nice_servant.json'].map((s) => [s.id, s]));
+  const relateOf = new Map();
+  for (const s of raw.files['KR_nice_servant.json']) for (const id of s.relateQuestIds || []) relateOf.set(id, s);
+  const rankups = [], interludes = [];
+  const svtQuest = (q, type) => {
+    if (!q.phases.length) return;
+    // 서번트: 개방 조건(svtGet, 없으면 svtLimit) → 서번트 쪽의 관련 퀘스트 목록 → 막간의 이야기 id 규칙(91 + 서번트 id 앞자리 + 순번)
+    const cond = (t) => svtOf.get(q.releaseConditions?.find((r) => r.type === t)?.targetId);
+    const owner = cond('svtGet') ?? cond('svtLimit') ?? relateOf.get(q.id)
+      ?? (String(q.id).startsWith('91') ? svtOf.get(Number(String(q.id).slice(2, -2)) * 100) : undefined);
+    const name = q.name.trim();
+    const o = {
+      id: q.id, type, name: owner && !name.includes(owner.name) ? `${owner.name} · ${name}` : name, spot: '', chapter: 0, sub: 0, subStr: '',
+      phases: q.phases, noBattle: q.phasesNoBattle || [], ap: q.consume, lv: q.recommendLv || '',
+    };
+    if (owner?.collectionNo > 0) o.svt = owner.collectionNo;
+    (type === 'rankup' ? rankups : interludes).push(o);
+  };
   for (const w of raw.files['KR_nice_war.json']) {
+    for (const sp of w.spots) for (const q of sp.quests) {
+      if (w.id === RANKUP_WAR) svtQuest(q, 'rankup');
+      else if (q.type === 'friendship') svtQuest(q, 'interlude');
+    }
     // 이벤트 워(8000번대 이상): 반복해서 돌 수 있는 퀘스트만 넣는다
     const isEvent = w.id >= 8000;
     if (w.id >= 1000 && w.id !== DAILY_WAR && !isEvent) continue;
@@ -286,6 +311,11 @@ export function transform(raw, now) {
     quests.sort((a, b) => a.id - b.id);
     const longName = w.id === DAILY_WAR ? '칼데아 게이트 요일 퀘스트' : isEvent ? `이벤트 ${(w.longName || w.name).replace(/\n/g, ' ')}` : w.longName.replace(/\n/g, ' ');
     wars.push({ id: w.id, name: w.name, longName, quests });
+  }
+  for (const [id, name, quests] of [[RANKUP_WAR, '강화 퀘스트', rankups], [INTERLUDE_WAR, '막간의 이야기', interludes]]) {
+    if (!quests.length) continue;
+    quests.sort((a, b) => a.id - b.id);
+    wars.push({ id, name, longName: name, quests });
   }
 
   // ---------- 마술예장 ----------

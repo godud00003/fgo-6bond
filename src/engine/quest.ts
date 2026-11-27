@@ -13,6 +13,7 @@ const PART_CHAPTER: Record<string, number> = {
 const ALIASES: [RegExp, number][] = [
   [/올림포스|5장\s*후편/, 306], [/아틀란티스|5장\s*전편/, 305], [/헤이안쿄/, 307], [/퉁구스카/, 309],
   [/트라움/, 310], [/오딜\s*콜/, 401], [/페이퍼\s*문/, 402], [/이드/, 403], [/아키타입/, 404],
+  [/강화\s*퀘|강퀘/, 1001], [/막간|인연\s*퀘|인터루드|영기\s*해방/, 1003],
 ];
 
 const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
@@ -30,11 +31,11 @@ function battles(war: War, quests: QuestRef[]): Candidate[] {
       if (q.noBattle.includes(phase)) continue;
       const n = (perSection.get(key) ?? 0) + 1;
       perSection.set(key, n);
-      const sec = q.type === 'main' ? (q.subStr || (q.sub ? `제${q.sub}절` : '')) : '프리';
+      const sec = q.type === 'main' ? (q.subStr || (q.sub ? `제${q.sub}절` : '')) : q.type === 'free' ? '프리' : '';
       const title = q.name || q.spot;
       out.push({
         war, quest: q, phase, battleNo: n,
-        label: `${war.longName} · ${sec} ${title}${q.phases.length > 1 ? ` · ${n}번째 배틀` : ''}`,
+        label: `${war.longName} · ${sec ? sec + ' ' : ''}${title}${q.phases.length > 1 ? ` · ${n}번째 배틀` : ''}`,
       });
     }
   }
@@ -83,11 +84,12 @@ export function resolveQuest(query: string, wars: War[]): Resolved {
     // 문장부호는 검색어와 퀘스트명 양쪽에서 지운다("칼데아 게이트-종화 수집 극급" ↔ "종화 수집<살・창 편>《극급》")
     const plain = (s: string) => norm(s.replace(PUNCT, ''));
     const words = q.replace(PUNCT, ' ').split(/\s+/).map(norm)
-      .filter((w) => w && !/^(\d+(\.\d+)?부|\d+(\.\d+)?장|프리|퀘스트|배틀|전투|\d+번째|칼데아|게이트|요일)$/.test(w));
+      .filter((w) => w && !/^(\d+(\.\d+)?부|\d+(\.\d+)?장|프리|퀘스트|배틀|전투|\d+번째|칼데아|게이트|요일|강화|강퀘|막간의?|이야기|인연퀘(스트)?|인연|인터루드)$/.test(w));
     const stripped = words.filter((w) => !scope.some((s) => warIds.includes(s.id) && longNameHit(s, w)));
     if (stripped.length) {
       const hit = cands.filter((c) => stripped.every((w) => plain(c.quest.name + c.quest.spot).includes(w)));
-      if (hit.length || !warIds.length) cands = hit;
+      // 강화 퀘스트·막간의 이야기는 수백 개라, 이름이 안 맞으면 전부 보여 주지 않고 없다고 답한다
+      if (hit.length || !warIds.length || warIds.every((id) => id === 1001 || id === 1003)) cands = hit;
     } else if (!warIds.length) cands = [];
     if (battleNo) cands = cands.filter((c) => c.battleNo === battleNo);
   }

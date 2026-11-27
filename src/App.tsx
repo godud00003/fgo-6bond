@@ -64,7 +64,8 @@ export default function App() {
       if (!b.meta) b.meta = { kr: { hash: '', timestamp: 0 }, builtAt: 0 };
       // 이전에 이 브라우저에서 받아 둔 더 새로운 데이터가 있으면 그것을 쓴다
       const cached = await loadCached();
-      const cur = cached && cached.boards && cached.meta.kr.timestamp > b.meta.kr.timestamp ? cached : b; // 예전 형식(클래스 스코어 없음)으로 저장된 데이터는 쓰지 않는다
+      // 예전 형식(클래스 스코어 없음, 강화 퀘스트·막간의 이야기 없음)으로 저장된 데이터는 쓰지 않는다
+      const cur = cached && cached.boards && cached.wars.some((w) => w.id === 1001) && cached.meta.kr.timestamp > b.meta.kr.timestamp ? cached : b;
       setData(cur);
       if (prefs.autoUpdate ?? true) void checkUpdate(cur, false);
     }).catch((e) => setError(String(e)));
@@ -242,7 +243,9 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       // 프렌드 예장 칸은 하나: 인연 예장이거나, 시작 NP 예장(np:수치)이거나
       friendCe: fNo && fNo !== 'np' && fNo !== 'auto' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendCeAuto: fNo === 'auto', friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
-      mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, commandSpell: !!prefs.cs, npPlan: prefs.npPlan ?? true, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup, must: prefs.must,
+      mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, commandSpell: !!prefs.cs, npPlan: prefs.npPlan ?? true, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup,
+      // 강화 퀘스트·막간의 이야기는 해당 서번트를 편성해야 한다
+      must: [...new Set([...(prefs.must ?? []), ...(picked?.quest.svt !== undefined ? [picked.quest.svt] : [])])],
     };
     const req = { pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings };
     ws.forEach((w, index) => w.postMessage({ type: 'cores', req, shard: { index, count } }));
@@ -281,6 +284,11 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               기본 인연 포인트 <b>{quest.bond.toLocaleString()}</b> · AP {picked.quest.ap} ·{' '}
               <a href={`https://namu.wiki/Search?q=${encodeURIComponent(namuQuery(picked.war.longName))}`} target="_blank" rel="noreferrer">나무위키에서 이 장 찾기</a>
             </p>
+            {picked.quest.svt !== undefined && (
+              <p className="muted">
+                이 퀘스트는 <b>{data.servants.find((s) => s.no === picked.quest.svt)?.name ?? `#${picked.quest.svt}`}</b>을(를) 편성해야 해서, 이 서번트가 들어간 편성만 찾습니다.
+              </p>
+            )}
             {quest.warnings.map((w) => <p key={w} className="warn">{w}</p>)}
             {quest.waves.map((wave, i) => (
               <div key={i} className="wave">
