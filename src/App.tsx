@@ -168,9 +168,15 @@ function buildPool(data: Data, roster: Roster, prefs: Prefs): PoolEntry[] {
   return out;
 }
 
-/** 권장 턴 수: 웨이브마다 필드 3기씩 정리하는 턴 수와 브레이크 게이지 줄 수 중 큰 쪽 */
+/** 권장 턴 수: 웨이브마다 처음 나온 적과 대기 중인 적을 차례로 정리하는 턴 수와 브레이크 게이지 줄 수 중 큰 쪽 */
 function suggestTurns(q: QuestData): number {
-  return q.waves.reduce((n, w, i) => n + Math.max(Math.ceil(w.length / (q.waveSize?.[i] ?? 3)), ...w.map((e) => e.bars.length)), 0);
+  return q.waves.reduce((n, w, i) => {
+    const size = q.waveSize?.[i] ?? 3;
+    const late = w.filter((e) => e.deckId > size).length;
+    const open = Math.max(1, size - (q.waveNoEntry?.[i]?.length ?? 0));
+    const clear = late < w.length ? 1 + Math.ceil(late / open) : Math.ceil(late / open);
+    return n + Math.max(clear, ...w.map((e) => e.bars.length));
+  }, 0);
 }
 
 function PartyTab({ data, roster, stock, prefs, setPrefs }: {
@@ -298,8 +304,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               <div key={i} className="wave">
                 <span className="tag">{i + 1}웨이브</span>
                 {wave.map((e, k) => (
-                  <span key={k} className={`enemy cls-${e.cls}`}>
-                    <b>{e.name}</b> {CLASS_KO[e.cls] ?? e.cls}·{ATTR_KO[e.attr] ?? e.attr}
+                  <span key={k} className={`enemy cls-${e.cls}`} title={e.deckId > (quest.waveSize?.[i] ?? 3) ? '먼저 나온 적이 쓰러진 다음 턴에 등장' : undefined}>
+                    <b>{e.deckId > (quest.waveSize?.[i] ?? 3) ? '대기: ' : ''}{e.name}</b> {CLASS_KO[e.cls] ?? e.cls}·{ATTR_KO[e.attr] ?? e.attr}
                     <span className="hp">{e.bars.map((h) => h.toLocaleString()).join(' / ')}</span>
                   </span>
                 ))}

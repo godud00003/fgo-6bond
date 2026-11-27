@@ -103,6 +103,8 @@ export interface QuestData {
   waveCalls?: EnemyDef[][];
   /** 웨이브별 동시 등장 수(기본 3). 6마리가 한꺼번에 나오는 퀘스트에서만 들어 있다 */
   waveSize?: number[];
+  /** 웨이브별 진입 금지 자리(1부터). 처음부터 비워 두는 자리로, 대기 중인 적도 이 자리로는 들어오지 않는다 */
+  waveNoEntry?: number[][];
 }
 
 export interface TurnLog {

@@ -121,6 +121,7 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
   const waves: EnemyDef[][] = [];
   const waveCalls: EnemyDef[][] = [];
   const waveSize: number[] = [];
+  const waveNoEntry: number[][] = [];
   for (const st of raw.stages || []) {
     const byNpc = new Map<number, any>();
     for (const e of st.enemies) byNpc.set(e.npcId, e);
@@ -165,7 +166,15 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
       warnings.push(`${st.wave}웨이브의 적은 빈자리가 생기면 증원을 계속 소환합니다. 소환하는 적까지 같은 턴에 쓰러뜨려야 웨이브가 끝납니다.`);
     }
     if (wave.some((e) => e.bars.length > 1)) warnings.push(`${st.wave}웨이브에 브레이크 게이지를 가진 적이 있습니다.`);
-    if (wave.length) { waves.push(wave); waveCalls.push(stageCall); waveSize.push(st.enemyFieldPosCount || 3); }
+    if (wave.length) {
+      const size = st.enemyFieldPosCount || 3;
+      waves.push(wave); waveCalls.push(stageCall); waveSize.push(size); waveNoEntry.push(st.NoEntryIds || []);
+      // 자리 번호(deckId)가 필드 자리 수보다 큰 적은 대기 중이며, 앞의 적이 쓰러진 다음 턴에 들어온다
+      const late = wave.filter((e) => e.deckId > size);
+      if (late.length && late.length < wave.length) {
+        warnings.push(`${st.wave}웨이브의 ${late.map((e) => e.name).join(', ')}은(는) 처음에는 나오지 않고, 먼저 나온 적이 쓰러진 다음 턴에 등장합니다.`);
+      }
+    }
   }
   if (!waves.length) warnings.push('이 전투는 Atlas Academy에 적 데이터가 없습니다.');
   if (/랜덤|ランダム/.test(`${title ?? ''}${raw.name ?? ''}`)) {
@@ -176,6 +185,7 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
     fieldTraits: (raw.individuality || []).map((t: any) => t.id), waves, warnings,
     waveCalls: waveCalls.some((c) => c.length) ? waveCalls : undefined,
     waveSize: waveSize.some((n) => n !== 3) ? waveSize : undefined,
+    waveNoEntry: waveNoEntry.some((l) => l.length) ? waveNoEntry : undefined,
   };
 }
 

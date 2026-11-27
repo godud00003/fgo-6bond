@@ -18,7 +18,7 @@ interface Actor {
   /** 어펜드 스킬 5: 남은 횟수와, 이미 쿨타임 감소를 받은 스킬 */
   reload: number; reloaded: boolean[];
 }
-interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean; summoned?: boolean }
+interface Enemy { def: EnemyDef; bars: number[]; buffs: Buff[]; dead: boolean; summoned?: boolean; /** 필드 자리 번호(1부터). 대기 중이면 0 */ pos: number }
 interface State {
   actors: Actor[]; /** 후열에서 대기 중인 서번트(앞에서부터 들어온다) */ bench: Actor[];
   field: Enemy[]; reserve: Enemy[]; wave: number; quest: QuestData;
@@ -120,8 +120,8 @@ function cloneState(s: State): State {
     master: s.master && { ...s.master, cd: s.master.cd.slice(), buffs: [] },
     fieldAdd: s.fieldAdd.map((f) => ({ ...f })),
     expend: null,
-    field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, summoned: e.summoned, buffs: e.buffs.map((b) => ({ ...b })) })),
-    reserve: s.reserve.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, buffs: [] })),
+    field: s.field.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, summoned: e.summoned, pos: e.pos, buffs: e.buffs.map((b) => ({ ...b })) })),
+    reserve: s.reserve.map((e) => ({ def: e.def, bars: e.bars.slice(), dead: e.dead, pos: 0, buffs: [] })),
   };
 }
 
@@ -131,12 +131,28 @@ const passiveBuffs = (def: EnemyDef): Buff[] => (def.passive ?? []).map((p) => (
 /** 이 웨이브에서 적이 동시에 설 수 있는 자리 수(보통 3, 일부 퀘스트는 6) */
 const fieldSize = (s: State) => s.quest.waveSize?.[s.wave] ?? 3;
 
+/** 비어 있고 적이 들어올 수 있는 자리 중 가장 앞 번호(없으면 0). 진입 금지 자리는 건너뛴다 */
+function freePos(s: State): number {
+  const no = s.quest.waveNoEntry?.[s.wave];
+  for (let p = 1, n = fieldSize(s); p <= n; p++) if (!no?.includes(p) && !s.field.some((e) => e.pos === p)) return p;
+  return 0;
+}
+
+/** 대기 중인 적을 빈자리로 들여보낸다 */
+function refill(s: State) {
+  for (let p = freePos(s); p && s.reserve.length; p = freePos(s)) { const e = s.reserve.shift()!; e.pos = p; s.field.push(e); }
+}
+
 function loadWave(s: State) {
   const defs = s.quest.waves[s.wave].slice().sort((a, b) => a.deckId - b.deckId);
-  const all = defs.map((def) => ({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false }));
   const size = fieldSize(s);
-  s.field = all.slice(0, size);
-  s.reserve = all.slice(size);
+  s.field = []; s.reserve = [];
+  // 자리 번호(deckId)가 필드 자리 수 이하인 적만 처음부터 서 있고, 나머지는 자리가 날 때까지 대기한다
+  for (const def of defs) {
+    const e: Enemy = { def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false, pos: 0 };
+    if (def.deckId >= 1 && def.deckId <= size && !s.field.some((x) => x.pos === def.deckId)) { e.pos = def.deckId; s.field.push(e); } else s.reserve.push(e);
+  }
+  if (!s.field.length) refill(s);
   summon(s, false); // 웨이브 시작 시 소환(자기 증원 목록을 가진 적만)
 }
 
@@ -145,7 +161,7 @@ function loadWave(s: State) {
  * 자기 목록(def.call)을 가진 적은 그 적이 살아 있을 때, 웨이브 공통 목록은 적이 하나라도 남아 있을 때 소환된다.
  */
 function summon(s: State, withStage: boolean) {
-  const add = (def: EnemyDef) => { if (s.field.length < fieldSize(s)) s.field.push({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false, summoned: true }); };
+  const add = (def: EnemyDef) => { const pos = freePos(s); if (pos) s.field.push({ def, bars: def.bars.slice(), buffs: passiveBuffs(def), dead: false, summoned: true, pos }); };
   const callers = s.field.filter((e) => !e.dead);
   if (!callers.length) return;
   for (const c of callers) for (const d of c.def.call ?? []) add(d);
@@ -791,7 +807,7 @@ function endTurn(s: State): boolean {
     for (const b of e.buffs) if (b.turn > 0) b.turn--;
     e.buffs = e.buffs.filter((b) => b.turn !== 0);
   }
-  while (s.field.length < fieldSize(s) && s.reserve.length) s.field.push(s.reserve.shift()!);
+  refill(s);
   summon(s, true); // 플레이어 행동이 끝난 뒤 남은 적이 빈자리에 증원을 부른다
   if (!s.field.length) {
     s.wave++;
