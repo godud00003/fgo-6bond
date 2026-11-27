@@ -122,6 +122,7 @@ const pack = (c: Core): PackedCore => ({
 /**
  * 퀘스트의 편성 제한을 설정에 반영한다.
  * - 편성 금지 서번트는 풀과 필수 포함 목록에서 뺀다.
+ * - 반드시 편성해야 하는 서번트는 필수 포함 목록에 더한다.
  * - 지정 서포트(NPC)가 있으면 프렌드를 고를 수 없으므로 프렌드 예장·프렌드 시작 NP 설정을 끈다.
  */
 function questRules(pool: PoolEntry[], all: Servant[], quest: QuestData, st: Settings): { pool: PoolEntry[]; all: Servant[]; st: Settings } {
@@ -130,6 +131,11 @@ function questRules(pool: PoolEntry[], all: Servant[], quest: QuestData, st: Set
     const banned = new Set(pool.filter((p) => ban.includes(p.svt.id)).map((p) => p.svt.no));
     pool = pool.filter((p) => !banned.has(p.svt.no));
     st = { ...st, must: st.must?.filter((no) => !all.some((s) => s.no === no && ban.includes(s.id))) };
+  }
+  // 퀘스트가 편성을 강제하는 서번트는 필수 포함 목록에 더한다
+  if (quest.must?.length) {
+    const nos = quest.must.flatMap((id) => { const s = all.find((x) => x.id === id); return s ? [s.no] : []; });
+    st = { ...st, must: [...new Set([...(st.must ?? []), ...nos])] };
   }
   const npc = quest.npc;
   if (npc) {
@@ -518,7 +524,7 @@ export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[
   }
   const feasible = cores.length + coresAtk.length;
   let note: string | undefined;
-  if (asked.must?.length && feasible && !results.length) {
+  if (st.must?.length && feasible && !results.length) {
     const missing = (st.must ?? []).filter((no) => !byNo.has(no)).map((no) => allByNo.get(no)?.name ?? `#${no}`);
     note = missing.length
       ? `필수 포함 서번트가 서번트 풀에 없습니다: ${missing.join(', ')}. 보유 서번트만 쓰는 중이라면 "내 서번트"에 등록되어 있는지 확인하세요.`

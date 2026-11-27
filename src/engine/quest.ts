@@ -174,18 +174,31 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
   // ---- 편성 제한: 지정 서포트(NPC), 서포트 자리 고정, 편성 금지 서번트
   const restr: { type: string; rangeType: string; targetVals: number[] }[] = (raw.restrictions || []).map((r: any) => r.restriction);
   const sups: any[] = raw.supportServants || [];
+  // 반드시 편성: 내 서번트나 NPC 중 하나로 데려가야 하는 서번트 / 내 서번트를 전열에 세워야 하는 서번트
+  const need = restr.filter((r) => r.type === 'mySvtOrNpc').flatMap((r) => r.targetVals);
+  const needMain = restr.filter((r) => r.type === 'fixedMySvtIndividualityPositionMain').flatMap((r) => r.targetVals);
+  const nameOf = (id: number) => names[id] || servants?.find((x) => x.id === id)?.name || `#${id}`;
   let npc: NpcSupport | undefined;
+  let npcId: number | undefined;
   if (raw.isNpcOnly && sups.length) {
     const fix = restr.find((r) => r.type === 'fixedSupportPosition');
     const front = !!fix && fix.targetVals.length > 0 && fix.targetVals.every((p) => p <= 3);
-    npc = toNpc(sups[0], names, servants, front);
+    // 후보가 여럿이면 반드시 편성해야 하는 서번트의 NPC를 고른다(내 서번트를 따로 넣지 않아도 된다)
+    const sup = sups.find((s) => need.includes(s.svt?.id)) ?? sups[0];
+    npcId = sup.svt?.id;
+    npc = toNpc(sup, names, servants, front);
     warnings.push(`지정 서포트 전투입니다: 프렌드 대신 ${npc.svt.name}(Lv.${npc.lv}, 보구 Lv.${npc.npLv}, 예장 없음)을(를) 데려가야 합니다. 프렌드 관련 설정은 적용되지 않습니다.`);
     if (front) warnings.push('지정 서포트는 전열에 고정됩니다. 전투 중 오더 체인지로는 후열과 바꿀 수 있습니다("오더 체인지 사용"을 켜면 그 편성도 찾습니다).');
-    if (sups.length > 1) warnings.push(`지정 서포트 후보가 ${sups.length}기입니다. 첫 번째(${npc.svt.name})를 고른 것으로 계산합니다.`);
+    if (sups.length > 1) warnings.push(`지정 서포트 후보가 ${sups.length}기입니다. ${npc.svt.name}을(를) 고른 것으로 계산합니다.`);
   }
+  const must = [...new Set([...needMain, ...need.filter((id) => id !== npcId)])];
+  if (must.length) warnings.push(`이 전투에는 ${must.map(nameOf).join(', ')}을(를) 내 파티에 반드시 넣어야 해서, 들어간 편성만 찾습니다.`);
+  const viaNpc = need.filter((id) => id !== npcId && sups.some((s) => s.svt?.id === id));
+  if (viaNpc.length) warnings.push(`내 서번트 대신 서포트 목록의 NPC ${viaNpc.map(nameOf).join(', ')}을(를) 데려가도 조건이 채워지지만, 그 경우는 계산하지 않습니다.`);
+  if (needMain.length) warnings.push(`${needMain.map(nameOf).join(', ')}은(는) 전열(스타팅 멤버)에 세워야 합니다. 결과에 후열로 나오면 전열로 옮겨야 하고, 그만큼 인연 포인트가 달라질 수 있습니다.`);
   const ban = [...new Set(restr.filter((r) => r.type === 'individuality' && r.rangeType === 'notEqual').flatMap((r) => r.targetVals))];
   if (ban.length) {
-    const who = ban.map((id) => names[id] || servants?.find((x) => x.id === id)?.name || `#${id}`).join(', ');
+    const who = ban.map(nameOf).join(', ');
     warnings.push(`이 전투에는 ${who}을(를) 내 파티에 넣을 수 없습니다.`);
   }
   const flags: string[] = raw.flags || [];
@@ -193,7 +206,6 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
     flags.some((f) => f === 'supportOnlyBattle' || f === 'supportOnlyForceBattle') && '서포트만 출전',
     flags.includes('userEventDeck') && '전용 편성',
     restr.some((r) => r.type === 'svtNum' || r.type === 'mySvtNum') && '출전 인원 제한',
-    restr.some((r) => r.type === 'mySvtOrNpc') && '특정 서번트 필수(내 서번트 또는 NPC)',
     flags.includes('disableMasterSkill') && '마스터 스킬 사용 불가',
   ].filter(Boolean);
   if (odd.length) warnings.push(`이 전투에는 계산에 반영하지 못한 편성 제한이 있습니다: ${odd.join(', ')}. 결과가 실제와 다를 수 있습니다.`);
@@ -266,7 +278,7 @@ export function toQuestData(raw: any, names: Record<string, string>, title?: str
     waveCalls: waveCalls.some((c) => c.length) ? waveCalls : undefined,
     waveSize: waveSize.some((n) => n !== 3) ? waveSize : undefined,
     waveNoEntry: waveNoEntry.some((l) => l.length) ? waveNoEntry : undefined,
-    npc, ban: ban.length ? ban : undefined,
+    npc, ban: ban.length ? ban : undefined, must: must.length ? must : undefined,
   };
 }
 

@@ -187,13 +187,6 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
   const [note, setNote] = useState('');
   const [picked, setPicked] = useState<Candidate | null>(null);
   const [quest, setQuest] = useState<QuestData | null>(null);
-  /** 이 퀘스트에서 반드시 내 파티에 넣어야 하는 서번트(도감 번호). 지정 서포트로 나오거나 편성 금지면 요구하지 않는다. */
-  const questSvt = (() => {
-    const no = picked?.quest.svt;
-    if (no === undefined || !quest) return no;
-    if (quest.npc?.svt.no === no || quest.ban?.includes(data.servants.find((s) => s.no === no)?.id ?? -1)) return undefined;
-    return no;
-  })();
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [progress, setProgress] = useState<number | null>(null);
@@ -261,9 +254,8 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
       friendCe: fNo && fNo !== 'np' && fNo !== 'auto' ? { no: Number(fNo), mlb: fMlb === '1' } : null, friendCeAuto: fNo === 'auto', friendStartNp: fNo === 'np' ? Number(fMlb) : 0, topN: 10, teapot: prefs.teapot,
       // 마술예장: -1 자동 선택, 0 사용 안 함, 그 외 지정
       mc: data.mcs.find((m) => m.id === prefs.mc) ?? null, mcAuto: prefs.mc === -1 ? data.mcs : undefined, orderChange: prefs.oc, commandSpell: !!prefs.cs, npPlan: prefs.npPlan ?? true, cardNp: prefs.cardNp, lv1: prefs.lv1, allowDup: prefs.allowDup,
-      // 강화 퀘스트·막간의 이야기는 해당 서번트를 편성해야 한다.
-      // 그 서번트가 지정 서포트로 나오거나 내 파티에 넣을 수 없는 전투에서는 요구하지 않는다.
-      must: [...new Set([...(prefs.must ?? []), ...(questSvt !== undefined ? [questSvt] : [])])],
+      // 퀘스트가 편성을 강제하는 서번트는 검색 쪽에서 더한다(막간의 이야기·강화 퀘스트라고 해서 그 서번트가 필수인 것은 아니다)
+      must: prefs.must ?? [],
     };
     const req = { pool: buildPool(data, roster, prefs), servants: data.servants, stock: ceStock, quest, rel: data.rel, settings };
     ws.forEach((w, index) => w.postMessage({ type: 'cores', req, shard: { index, count } }));
@@ -302,11 +294,6 @@ function PartyTab({ data, roster, stock, prefs, setPrefs }: {
               기본 인연 포인트 <b>{quest.bond.toLocaleString()}</b> · AP {picked.quest.ap} ·{' '}
               <a href={`https://namu.wiki/Search?q=${encodeURIComponent(namuQuery(picked.war.longName))}`} target="_blank" rel="noreferrer">나무위키에서 이 장 찾기</a>
             </p>
-            {questSvt !== undefined && (
-              <p className="muted">
-                이 퀘스트는 <b>{data.servants.find((s) => s.no === picked.quest.svt)?.name ?? `#${picked.quest.svt}`}</b>을(를) 편성해야 해서, 이 서번트가 들어간 편성만 찾습니다.
-              </p>
-            )}
             {quest.warnings.map((w) => <p key={w} className="warn">{w}</p>)}
             {quest.waves.map((wave, i) => (
               <div key={i} className="wave">

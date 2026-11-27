@@ -123,6 +123,8 @@ export interface QuestData {
   npc?: NpcSupport;
   /** 내 파티에 넣을 수 없는 서번트(서번트 id) */
   ban?: number[];
+  /** 내 파티에 반드시 넣어야 하는 서번트(서번트 id). 퀘스트에 편성 제한이 걸려 있을 때만 들어 있다. */
+  must?: number[];
 }
 
 export interface TurnLog {
