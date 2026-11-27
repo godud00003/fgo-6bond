@@ -38,6 +38,12 @@ export function transform(raw, now) {
     'upAtk', 'downAtk', 'upCommandall', 'downCommandall', 'upNpdamage', 'downNpdamage', 'upDamage',
     'upDropnp', 'downDropnp', 'downDefence', 'upDefence', 'downDefencecommandall', 'regainNp',
     'addDamage', 'buffRate', 'pierceInvincible',
+    // 근성: 대미지와는 무관하지만 '[근성] 상태인 아군'을 조건으로 하는 효과(테스카틀리포카 1스)가 있어 상태로 남긴다
+    'guts',
+    // 강화 성공률 UP: 확률로 걸리는 버프(황제특권 등)를 확정으로 만든다
+    'upGrantstate',
+    // 받는 강화 성공률 UP(강화 내성 DOWN): 받는 쪽에 걸린다(스카사하 2스)
+    'downTolerance',
     // 오버차지 단계 UP, 특성 특공(대상의 특성 / 대상에게 걸린 상태), 특성 부여, 필드 특성 부여, 방어 무시
     'breakAvoidance', 'upChagetd', 'upDamageIndividuality', 'upDamageIndividualityActiveonly', 'addIndividuality', 'fieldIndividuality', 'pierceDefence',
   ]);
@@ -90,7 +96,8 @@ export function transform(raw, now) {
         const o = { t: b.type };
         // 보유자가 특정 특성(또는 필드 특성)을 가질 때만 켜지는 버프
         const need = [b.script?.INDIVIDUALITIE, ...(b.script?.INDIVIDUALITIE_OR || [])].filter(Boolean).map((t) => t.id);
-        if (need.length) o.si = need;
+        // 근성의 INDIVIDUALITIE는 반대 뜻이다(근성 봉인 상태면 발동하지 않는다): 조건으로 옮기지 않는다
+        if (need.length && b.type !== 'guts') o.si = need;
         if (b.ckSelfIndv?.length) o.cs = ids(b.ckSelfIndv);
         if (b.ckOpIndv?.length) o.co = ids(b.ckOpIndv);
         if (b.vals?.length) o.v = ids(b.vals);

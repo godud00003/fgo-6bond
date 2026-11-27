@@ -24,8 +24,8 @@ self.onmessage = (ev: MessageEvent<WorkerMessage>) => {
       }, ev.data.shard);
       self.postMessage({ type: 'cores', part });
     } else if (req) {
-      const { pool, servants, stock, quest, settings } = req;
-      self.postMessage({ type: 'done', output: finishSearch(ev.data.parts, pool, servants, stock, quest, settings) });
+      const { pool, servants, stock, quest, rel, settings } = req;
+      self.postMessage({ type: 'done', output: finishSearch(ev.data.parts, pool, servants, stock, quest, settings, rel) });
     }
   } catch (e) {
     self.postMessage({ type: 'error', message: String(e) });

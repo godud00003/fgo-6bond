@@ -109,7 +109,11 @@ export interface TurnLog {
   nps: { who: string; np: string; hits: { enemy: string; dmg: number; hp: number; kill: boolean }[]; refund: number }[];
   /** 교체·퇴장 같은 사건 */
   events?: string[];
+  /** 이 턴에 한 행동을 순서대로 적은 것(다시 재생하는 데 쓴다). 서번트는 편성 안의 자리 번호, 마스터는 -1. */
+  ops?: Op[];
 }
+/** 스킬 사용 [s, 사용자, 스킬 번호, 대상] / 보구 [n, 사용자, 연계 순서] / 오더 체인지 교체 [x] */
+export type Op = ['s', number, number, number] | ['n', number, number] | ['x'];
 export interface SimResult {
   cleared: boolean; turns: number; killed: number; total: number; log: TurnLog[];
   /** 깎아 낸 HP 게이지 수 / 전체 게이지 수(브레이크 포함) */

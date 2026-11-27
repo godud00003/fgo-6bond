@@ -2,7 +2,7 @@
 // 평타 대미지, 적의 행동(피격 NP, 디버프, 사망), 적 패시브·내성, 오버차지는 다루지 않는다.
 // 평타로 얻는 NP는 계산하지 않고, 옵션(cardNp)으로 준 가정치만 더한다.
 // 후열: 전열이 퇴장(보구의 즉사 효과)하거나 오더 체인지를 쓰면 후열 선두가 들어온다.
-import type { ActorCfg, BuffDef, ClassScore, EnemyDef, Fn, QuestData, Rel, Servant, SimResult, Skill, Sv, TurnLog } from './types.ts';
+import type { ActorCfg, BuffDef, ClassScore, EnemyDef, Fn, Op, QuestData, Rel, Servant, SimResult, Skill, Sv, TurnLog } from './types.ts';
 
 const CARD_TRAIT: Record<string, number> = { arts: 4001, buster: 4002, quick: 4003 };
 const CARD_DMG: Record<string, number> = { arts: 1, buster: 1.5, quick: 0.8 };
@@ -46,6 +46,8 @@ interface SkillCtx {
   dynTraits: boolean;
   /** 무적·회피가 나올 수 있다(적 패시브, 오베론 보구) */
   evasive: boolean;
+  /** 확률로 걸리는 대미지 관련 버프가 있다: 강화 성공률 UP이 의미가 있다 */
+  chancy: boolean;
   /** 이 퀘스트에 나오는 적들의 특성 */
   enemyTraits: Set<number>;
 }
@@ -94,7 +96,10 @@ const CLASS_LABEL: Record<string, string> = {
   saber: '세이버', archer: '아처', lancer: '랜서', rider: '라이더', caster: '캐스터', assassin: '어새신', berserker: '버서커',
   shielder: '실더', ruler: '룰러', avenger: '어벤저', alterEgo: '얼터에고', moonCancer: '문캔서', foreigner: '포리너', pretender: '프리텐더', beast: '비스트',
 };
+const slotOf = new WeakMap<ActorCfg, number>();
+const slot = (a: Actor) => slotOf.get(a.cfg) ?? -1;
 function setLabels(lineup: ActorCfg[]) {
+  lineup.forEach((c, i) => slotOf.set(c, i));
   for (const c of lineup) {
     const twins = lineup.filter((x) => x !== c && x.svt.name === c.svt.name);
     let label = c.svt.name;
@@ -148,10 +153,27 @@ function pickEnemy(s: State): Enemy | undefined {
   return alive(s).reduce<Enemy | undefined>((a, e) => (!a || e.bars[0] > a.bars[0] ? e : a), undefined);
 }
 
+/** 쓰는 쪽에 걸린 성공률 UP 중 이 효과의 버프에 해당하는 것의 합(강화 성공률 UP은 강화에만, 약화 성공률 UP은 약화에만) */
+function grantRate(user: Actor, fn: Fn): number {
+  if (!fn.b) return 0;
+  let n = 0;
+  for (const b of user.buffs) if (b.t === 'upGrantstate' && (!b.d.cs?.length || fn.b.some((d) => d.v?.some((x) => b.d.cs!.includes(x))))) n += b.val;
+  return n;
+}
+/** 받는 쪽에 걸린 '받는 강화 성공률 UP' 중 이 효과의 버프에 해당하는 것의 합 */
+function receiveRate(target: Actor, fn: Fn): number {
+  if (!fn.b) return 0;
+  let n = 0;
+  for (const b of target.buffs) if (b.t === 'downTolerance' && (!b.d.co?.length || fn.b.some((d) => d.v?.some((x) => b.d.co!.includes(x))))) n += b.val;
+  return n;
+}
 /** 스킬·보구의 부가 효과 1개를 적용한다. */
 function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | undefined, oc = 1) {
   const sv = svAt(fn, lvIdx, oc);
-  if (sv.Rate !== undefined && sv.Rate < 1000) return; // 확률 효과는 실패로 가정
+  // 확률 효과는 실패로 가정한다. 단, 아군에게 거는 버프는 쓰는 쪽의 강화 성공률 UP과 받는 쪽의 받는 강화 성공률 UP을 더해
+  // 100% 이상이면 확정이다(아래에서 대상별로 가린다). 적에게 거는 약화는 적의 내성을 알 수 없으므로 실패로 둔다.
+  const chance = sv.Rate !== undefined && sv.Rate < 1000;
+  if (chance && (!fn.b || fn.tg.startsWith('enemy'))) return;
   const field = fieldTraits(s);
   if (fn.qtv?.length && !fn.qtv.some((t) => field.includes(t))) return;
   if (fn.t === 'addFieldChangeToField') { for (const t of sv.FieldIndividuality ?? []) s.fieldAdd.push({ trait: t, turn: sv.Turn ?? -1 }); return; }
@@ -186,8 +208,15 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
     return;
   }
   if (fn.tv?.length) {
-    allies = allies.filter((a) => fn.tv!.some((t) => actorTraits(a).includes(t)));
-    enemies = enemies.filter((e) => fn.tv!.some((t) => enemyTraits(e).includes(t)));
+    // 대상 조건: 서번트의 특성이나 걸려 있는 상태의 특성(예: [근성] 상태인 아군)
+    const has = (traits: number[], buffs: Buff[]) => fn.tv!.some((t) => traits.includes(t) || buffs.some((b) => b.d.v?.includes(t)));
+    allies = allies.filter((a) => has(actorTraits(a), a.buffs));
+    enemies = enemies.filter((e) => has(enemyTraits(e), e.buffs));
+  }
+  if (chance) {
+    const g = grantRate(user, fn);
+    allies = allies.filter((a) => sv.Rate! + g + receiveRate(a, fn) >= 1000);
+    if (!allies.length) return;
   }
   if (fn.t === 'gainMultiplyNp') { for (const a of allies) a.gauge = Math.min(30000, a.gauge + Math.floor((a.gauge * v) / 1000)); return; }
   // 다른 아군의 NP를 줄이고, 줄어든 만큼 자신이 얻는다
@@ -201,7 +230,7 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
       const mk = (): Buff => ({ t: d.t, val: v, turn: sv.Turn ?? -1, count: sv.Count ?? -1, d });
       if (d.t === 'fieldIndividuality') s.fieldBuff = true;
       // 특성 조건이 붙은 버프는 보유자나 필드가 그 특성을 가질 때만 건다
-      const ok = (a: Actor) => !d.si?.length || d.si.some((t) => actorTraits(a).includes(t) || field.includes(t));
+      const ok = (a: Actor) => !d.si?.length || d.si.some((t) => actorTraits(a).includes(t) || field.includes(t) || a.buffs.some((b) => b.d.v?.includes(t)));
       for (const a of allies) if (ok(a)) a.buffs.push(mk());
       for (const e of enemies) e.buffs.push(mk());
     }
@@ -367,6 +396,7 @@ function fireNp(s: State, a: Actor, log?: TurnLog, chain = 0) {
   if (np.dmg) for (const b of a.buffs) if (b.count > 0 && CONSUMED.has(b.t)) b.count--;
   a.buffs = a.buffs.filter((b) => b.count !== 0);
   log?.nps.push(entry);
+  if (log) (log.ops ??= []).push(['n', slot(a), chain]);
   for (const v of leaving) leave(s, v, log);
 }
 
@@ -427,13 +457,14 @@ const ANY_BUFF = new Set(['upDamageIndividualityActiveonly', 'buffRate', 'upChag
 const STATE_FN = new Set(['damageNpIndividualSum', 'damageNpStateIndividualFix', 'gainNpBuffIndividualSum', 'gainNpIndividualSum', 'gainNpTargetSum']);
 
 // 편성마다 다시 훑지 않도록 서번트·마술예장·퀘스트별로 한 번만 계산해 둔다
-interface Flags { stateful: boolean; dyn: boolean; evasive: boolean }
+interface Flags { stateful: boolean; dyn: boolean; evasive: boolean; chancy: boolean }
 const flagsOf = (fns: Fn[]): Flags => {
   const buffs = fns.flatMap((f) => f.b ?? []);
   return {
     stateful: fns.some((f) => STATE_FN.has(f.t)) || buffs.some((b) => b.t === 'upDamageIndividualityActiveonly'),
     dyn: buffs.some((b) => b.t === 'addIndividuality'),
     evasive: buffs.some((b) => b.t === 'invincible' || b.t === 'avoidance'),
+    chancy: fns.some((f) => !!f.b && (pickLv(f.sv, 9).Rate ?? 1000) < 1000 && f.b.some((b) => ATT_BUFF.has(b.t) || DEF_BUFF.has(b.t) || ANY_BUFF.has(b.t))),
   };
 };
 const svtFlags = new WeakMap<Servant, Flags>();
@@ -452,8 +483,8 @@ function skillCtx(front: ActorCfg[], quest: QuestData, mc: Skill[] | null | unde
     for (const w of quest.waveCalls ?? []) for (const e of w) scan(e);
     questFlags.set(quest, (q = cur));
   }
-  let stateful = false, dyn = q.dyn, evasive = q.evasive;
-  const add = (f: Flags) => { stateful ||= f.stateful; dyn ||= f.dyn; evasive ||= f.evasive; };
+  let stateful = false, dyn = q.dyn, evasive = q.evasive, chancy = false;
+  const add = (f: Flags) => { stateful ||= f.stateful; dyn ||= f.dyn; evasive ||= f.evasive; chancy ||= f.chancy; };
   for (const c of front) {
     let f = svtFlags.get(c.svt);
     if (!f) svtFlags.set(c.svt, (f = flagsOf([...c.svt.skills.flatMap((sk) => sk.fn), ...(c.svt.np?.fn ?? []), ...c.svt.passive])));
@@ -464,7 +495,7 @@ function skillCtx(front: ActorCfg[], quest: QuestData, mc: Skill[] | null | unde
     if (!f) mcFlags.set(mc, (f = flagsOf(mc.flatMap((sk) => sk.fn))));
     add(f);
   }
-  return { stateful, dynTraits: dyn, evasive, enemyTraits: q.enemyTraits };
+  return { stateful, dynTraits: dyn, evasive, chancy, enemyTraits: q.enemyTraits };
 }
 /** 아군에게 거는 버프 d가 a의 보구에 적용될 수 있는가(카드 종류, 자신·적의 특성 조건) */
 function buffFits(s: State, d: BuffDef, a: Actor): boolean {
@@ -490,15 +521,19 @@ function useful(s: State, r: SkillRef, target: Actor): boolean {
   const lv = skillLvOf(r) - 1;
   for (const fn of skillFns(r)) {
     const rate = svAt(fn, lv).Rate;
-    if (rate !== undefined && rate < 1000) continue; // 확률 효과는 실패로 본다
+    // 확률 효과는 실패로 본다(성공률 UP으로 확정이 된 아군 버프는 아래에서 따로 가린다)
+    const chance = rate !== undefined && rate < 1000;
+    if (chance && (!fn.b || fn.tg.startsWith('enemy'))) continue;
     if (!fn.b) { if (CHARGE.has(fn.t) || BUFFLIKE.has(fn.t)) return true; continue; }
     if (fn.tg.startsWith('enemy')) { if (fn.b.some((d) => DEF_BUFF.has(d.t))) return true; continue; }
-    const rec = fn.tg === 'self' ? [r.a] : fn.tg === 'ptOne' ? [target]
+    let rec = fn.tg === 'self' ? [r.a] : fn.tg === 'ptOne' ? [target]
       : fn.tg === 'ptAll' || fn.tg === 'ptFull' ? s.actors
         : fn.tg === 'ptOther' || fn.tg === 'ptOtherFull' ? s.actors.filter((a) => a !== r.a) : [];
+    if (chance) { const g = grantRate(r.a, fn); rec = rec.filter((a) => rate! + g + receiveRate(a, fn) >= 1000); }
     if (!rec.length) continue;
     for (const d of fn.b) {
       if (ANY_BUFF.has(d.t)) return true;
+      if (d.t === 'upGrantstate' || d.t === 'downTolerance') { if (s.ctx.chancy) return true; continue; }
       if (d.t === 'pierceInvincible' || d.t === 'breakAvoidance') { if (s.ctx.evasive && rec.some((a) => a.cfg.svt.np?.dmg)) return true; continue; }
       if (ATT_BUFF.has(d.t) && rec.some((a) => buffFits(s, d, a))) return true;
     }
@@ -533,6 +568,7 @@ function useSkill(s: State, r: SkillRef, target: Actor, log?: TurnLog) {
   s.used++;
   const needsTarget = sk.fn.some((f) => f.tg === 'ptOne');
   log?.skills.push({ who: nameOf(r.a), skill: sk === COMMAND_SPELL ? sk.name : `${sk.name}(${r.i + 1}스)`, target: needsTarget ? nameOf(target) : undefined });
+  if (log) (log.ops ??= []).push(['s', slot(r.a), r.i, slot(target)]);
 }
 
 /** 낭비가 가장 적은 NP 충전 스킬 조합으로 대상의 게이지를 100%까지 채운다. */
@@ -579,12 +615,22 @@ function orderChange(s: State, log: TurnLog) {
   if (!out) return;
   const target = dealers(s)[0] ?? s.actors.find((a) => a !== out) ?? out;
   for (const r of available(s)) if (r.a === out && finOk(s, r, target) && r.a.cfg.svt.skills[r.i].fn.length) useSkill(s, r, target, log);
+  swapOut(s, log);
+}
+/** 오더 체인지의 교체: 내보내기로 정한 서번트를 후열 선두와 바꾼다. 할 수 없으면 false. */
+function swapOut(s: State, log: TurnLog): boolean {
+  const m = s.master;
+  const oc = m ? m.cfg.svt.skills.findIndex((sk) => sk.fn.some((f) => f.t === 'replaceMember')) : -1;
+  const out = s.actors.find((a) => a.cfg.swapOut && !a.disabled);
+  if (!m || oc < 0 || m.cd[oc] !== 0 || !out || !s.bench.length) return false;
   const next = s.bench.shift()!;
   s.actors[s.actors.indexOf(out)] = next;
   s.bench.push(out);
   const sk = m.cfg.svt.skills[oc];
   m.cd[oc] = sk.cd[Math.min(10, sk.cd.length) - 1];
   (log.events ??= []).push(`오더 체인지: ${nameOf(out)}의 스킬을 쓴 뒤 ${nameOf(next)}와(과) 교체`);
+  (log.ops ??= []).push(['x']);
+  return true;
 }
 
 /** 스킬이 대상 c에게 쓸모가 있는가: 남의 자기 전용 스킬은 c에게 아무 효과가 없다 */
@@ -641,8 +687,38 @@ function playRelay(s: State, log: TurnLog): boolean {
 }
 
 /** 스킬을 쓰는 순서. 쿨타임 단축 스킬은 다른 스킬을 쓴 뒤에 써야 효과가 있으므로 맨 뒤로 보낸다. */
-const skillOrder = (s: State, list: SkillRef[], d: Actor) =>
-  list.filter((r) => finOk(s, r, d)).sort((x, y) => Number(shortens(x)) - Number(shortens(y)) || Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
+const skillOrder = (s: State, list: SkillRef[], d: Actor) => {
+  const out = list.filter((r) => finOk(s, r, d));
+  // 다른 스킬의 대상 조건이 되는 상태를 거는 스킬은 그 스킬보다 먼저 쓴다(테스카틀리포카: 근성을 거는 3스 → [근성] 상태 아군의 공격력을 올리는 1스)
+  // 필드 특성을 조건으로 하는 스킬이 있으면 필드를 바꾸는 스킬을, 확률로 걸리는 버프가 있으면 강화 성공률 UP을 먼저 쓴다.
+  const wants = out.flatMap((r) => stateNeeds(r.a.cfg.svt.skills[r.i]));
+  const wantsField = out.some((r) => skillFns(r).some((f) => f.qtv?.length || f.b?.some((b) => b.si?.length)));
+  const wantsRate = out.some((r) => hasChance(r.a.cfg.svt.skills[r.i]));
+  const first = (r: SkillRef) => Number(
+    (wants.length > 0 && stateGives(r.a.cfg.svt.skills[r.i]).some((t) => wants.includes(t)) && !stateNeeds(r.a.cfg.svt.skills[r.i]).length)
+    || (wantsField && skillFns(r).some((f) => f.t === 'addFieldChangeToField' || f.b?.some((b) => b.t === 'fieldIndividuality')) && !skillFns(r).some((f) => f.qtv?.length))
+    || (wantsRate && skillFns(r).some((f) => f.b?.some((b) => b.t === 'upGrantstate' || b.t === 'downTolerance')) && !hasChance(r.a.cfg.svt.skills[r.i])));
+  return out.sort((x, y) => first(y) - first(x) || Number(shortens(x)) - Number(shortens(y)) || Number(hasCharge(x)) - Number(hasCharge(y)) || Number(y.a === d) - Number(x.a === d));
+};
+const needsCache = new WeakMap<Skill, number[]>(), givesCache = new WeakMap<Skill, number[]>(), chanceCache = new WeakMap<Skill, boolean>();
+/** 확률로 걸리는 버프가 있는 스킬인가 */
+function hasChance(sk: Skill): boolean {
+  let v = chanceCache.get(sk);
+  if (v === undefined) chanceCache.set(sk, (v = sk.fn.some((f) => !!f.b && (pickLv(f.sv, 9).Rate ?? 1000) < 1000)));
+  return v;
+}
+/** 이 스킬의 효과가 대상에게 요구하는 특성·상태(개수를 세는 효과의 목록은 조건이 아니다) */
+function stateNeeds(sk: Skill): number[] {
+  let v = needsCache.get(sk);
+  if (!v) needsCache.set(sk, (v = sk.fn.flatMap((f) => [...(f.tv && !STATE_FN.has(f.t) && f.b ? f.tv : []), ...(f.b ?? []).flatMap((b) => b.si ?? [])])));
+  return v;
+}
+/** 이 스킬이 거는 상태들의 특성 */
+function stateGives(sk: Skill): number[] {
+  let v = givesCache.get(sk);
+  if (!v) givesCache.set(sk, (v = sk.fn.flatMap((f) => (f.b ?? []).flatMap((b) => b.v ?? []))));
+  return v;
+}
 
 function playTurn(s: State, mode: SimMode, log: TurnLog) {
   orderChange(s, log);
@@ -913,7 +989,7 @@ export function simulatePlan(front: ActorCfg[], quest: QuestData, rel: Rel, opt:
         const eager = p && sub.some(isDmg);
         if (--budget < 0) return null;
         const c = cloneState(base);
-        const entry: TurnLog = { ...head, skills: head.skills.slice(), nps: [], events: head.events?.slice() };
+        const entry: TurnLog = { ...head, skills: head.skills.slice(), nps: [], events: head.events?.slice(), ops: head.ops?.slice() };
         if (!playPlan(c, idx, charge, eager, allIn, entry, note)) continue;
         const next = [...log, entry];
         if (endTurn(c)) return { cleared: true, turns: turn, killed: c.killed, total, log: next, broken: c.broken, bars };
@@ -932,6 +1008,64 @@ export function simulatePlan(front: ActorCfg[], quest: QuestData, rel: Rel, opt:
   return null;
 }
 
+// ---------------------------------------------------------------- 필요 없는 스킬 빼기
+// 찾은 진행은 '되는 한 가지'일 뿐이라 없어도 되는 스킬이 섞여 있다(버프를 몰아 쓰는 운용의 오버딜 등).
+// 기록한 행동을 그대로 다시 재생할 수 있으므로, 스킬을 하나씩 빼고 재생해 봐서 그래도 같은 턴 안에 클리어되면 뺀다.
+
+/** 턴별 행동 목록을 그대로 실행한다. 할 수 없는 행동이 있거나 클리어하지 못하면 null. */
+function replay(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra & { roll: number }, script: Op[][]): SimResult | null {
+  const s = initState(front, quest, rel, opt);
+  const total = countTotal(quest), bars = countBars(quest);
+  if (!total) return null;
+  loadWave(s);
+  const onField = (i: number) => (i < 0 ? s.master ?? undefined : s.actors.find((a) => slot(a) === i));
+  const log: TurnLog[] = [];
+  for (let t = 0; t < script.length; t++) {
+    const entry: TurnLog = { turn: t + 1, wave: s.wave + 1, skills: [], nps: [] };
+    for (const op of script[t]) {
+      if (op[0] === 'x') { if (!swapOut(s, entry)) return null; continue; }
+      const a = onField(op[1]);
+      if (!a || a.disabled) return null;
+      if (op[0] === 'n') {
+        if (a.gauge < 10000) return null;
+        if (a.cfg.svt.np!.dmg && !alive(s).length) continue;
+        fireNp(s, a, entry, op[2]);
+        continue;
+      }
+      const target = onField(op[3]) ?? a;
+      if (!available(s).some((r) => r.a === a && r.i === op[2]) && !(a === s.master && a.cd[op[2]] === 0)) return null;
+      useSkill(s, { a, i: op[2] }, target, entry);
+    }
+    log.push(entry);
+    if (endTurn(s)) return { cleared: true, turns: t + 1, killed: s.killed, total, log, broken: s.broken, bars };
+  }
+  return null;
+}
+
+/**
+ * 클리어한 진행에서 없어도 되는 스킬을 뺀다. 마술예장·령주 스킬을 먼저, 그다음 나중에 쓴 스킬부터 빼 본다.
+ * 기록을 재생할 수 없는 진행(재생 결과가 원래와 다르다)은 그대로 돌려준다.
+ */
+export function trimSkills(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra & { roll: number }, res: SimResult): SimResult {
+  if (!res.cleared || res.log.some((t) => !t.ops)) return res;
+  let script = res.log.map((t) => t.ops!.slice());
+  let best = replay(front, quest, rel, opt, script);
+  if (!best || best.turns !== res.turns) return res;
+  const spots: [number, number][] = [];
+  script.forEach((ops, t) => ops.forEach((op, k) => { if (op[0] === 's') spots.push([t, k]); }));
+  const isMaster = (p: [number, number]) => script[p[0]][p[1]][1] === -1;
+  // 뒤에서부터 빼면 앞쪽 자리 번호가 밀리지 않는다
+  spots.sort((x, y) => Number(isMaster(y)) - Number(isMaster(x)) || y[0] - x[0] || y[1] - x[1]);
+  const gone = new Set<Op>();
+  for (const [t, k] of spots) {
+    const op = res.log[t].ops![k];
+    const trial = res.log.map((tl) => tl.ops!.filter((o) => o !== op && !gone.has(o)));
+    const r = replay(front, quest, rel, opt, trial);
+    if (r && r.turns <= best.turns) { best = r; gone.add(op); script = trial; }
+  }
+  return best;
+}
+
 // ---------------------------------------------------------------- NP 수급 상한
 // 대부분의 편성은 NP가 모자라 실패한다. 평타가 없으므로 HP 게이지 한 줄마다 대미지 보구가 적어도 한 번 필요하고,
 // 보구 한 번에는 NP 100%가 든다. 전투 내내 얻을 수 있는 NP를 넉넉하게 잡아도 필요량에 못 미치면 시뮬레이션 없이 버린다.
@@ -939,7 +1073,7 @@ export function simulatePlan(front: ActorCfg[], quest: QuestData, rel: Rel, opt:
 /** 레벨에 맞는 수치 중 오버차지 단계를 통틀어 가장 큰 Value */
 const maxValue = (fn: Fn, lvIdx: number): number => {
   let v = 0;
-  for (let oc = 1; oc <= (fn.oc ? 5 : 1); oc++) { const sv = svAt(fn, lvIdx, oc); if (sv.Rate === undefined || sv.Rate >= 1000) v = Math.max(v, sv.Value ?? 0); }
+  for (let oc = 1; oc <= (fn.oc ? 5 : 1); oc++) { const sv = svAt(fn, lvIdx, oc); if (sv.Rate === undefined || sv.Rate >= 1000 || fn.b) v = Math.max(v, sv.Value ?? 0); } // 확률 버프는 성공률 UP으로 확정이 될 수 있으므로 걸리는 것으로 본다
   return v;
 };
 /** 상한을 잡을 수 없는 충전 방식(상태 수 비례, 배율, 흡수) */

@@ -51,7 +51,7 @@ const t0 = Date.now();
 // SHARDS=n 이면 탐색을 n몫으로 나눠 차례로 계산한 뒤 합친다(앱의 워커 분할과 같은 경로)
 const shards = Number(process.env.SHARDS || 0);
 const out = shards
-  ? finishSearch(Array.from({ length: shards }, (_, index) => findCores(pool, servants, stock, quest, rel, st, undefined, { index, count: shards })), pool, servants, stock, quest, st)
+  ? finishSearch(Array.from({ length: shards }, (_, index) => findCores(pool, servants, stock, quest, rel, st, undefined, { index, count: shards })), pool, servants, stock, quest, st, rel)
   : search(pool, servants, stock, quest, rel, st);
 console.log('sims', out.simulated, 'feasible cores', out.feasible, 'ms', Date.now() - t0, out.autoFriendCe !== undefined ? '| 프렌드 예장 자동: ' + out.autoFriendCe : '');
 for (const p of out.results) {

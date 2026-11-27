@@ -1,5 +1,5 @@
 // 클리어 가능한 전열 조합을 찾고, 그 위에서 인연 포인트 총합이 최대가 되는 파티·예장을 고른다.
-import { simulateBest } from './sim.ts';
+import { COMMAND_SPELL_NAME, simulateBest, trimSkills } from './sim.ts';
 import type { ActorCfg, BondCE, ClassScore, MysticCode, QuestData, Rel, Servant, SimResult } from './types.ts';
 
 export interface PoolEntry {
@@ -89,6 +89,8 @@ interface Core {
   bench: Set<number>; friendBench: boolean; swapOut?: number;
   /** 전열의 자리 순서(도감 번호, 프렌드는 'f'). 진궁의 제물처럼 위치가 의미 있는 편성이 있다. */
   seq: string[];
+  /** 시뮬레이션한 편성 그대로(필요 없는 스킬을 뺄 때 다시 재생한다) */
+  lu: ActorCfg[];
   /** 탐색 단위 번호: 여러 워커가 나눠 찾은 결과를 한 번에 찾았을 때와 같은 순서로 합치는 데 쓴다 */
   u: number;
 }
@@ -99,6 +101,7 @@ export interface Shard { index: number; count: number }
 interface PackedCore {
   own: number[]; friend: number | null; friendRole?: 'dealer' | 'support'; roles: [number, 'dealer' | 'support'][]; sim: SimResult;
   mc: number | null; cs?: boolean; bench: number[]; friendBench: boolean; swapOut?: number; seq: string[]; u: number;
+  lu: (Omit<ActorCfg, 'svt'> & { no: number })[];
 }
 /** 클리어되는 편성을 찾는 단계의 결과(한 워커의 몫) */
 export interface CorePart {
@@ -111,6 +114,7 @@ export interface CorePart {
 const pack = (c: Core): PackedCore => ({
   own: c.own.map((p) => p.svt.no), friend: c.friend?.no ?? null, friendRole: c.friendRole, roles: [...c.roles], sim: c.sim,
   mc: c.mc?.id ?? null, cs: c.cs, bench: [...c.bench], friendBench: c.friendBench, swapOut: c.swapOut, seq: c.seq, u: c.u,
+  lu: c.lu.map(({ svt, ...rest }) => ({ ...rest, no: svt.no })),
 });
 
 const condMatch = (cond: number[][], traits: number[]) => !cond.length || cond.some((g) => g.every((t) => traits.includes(t)));
@@ -120,7 +124,7 @@ export function search(
   pool: PoolEntry[], all: Servant[], stock: CEStock[], quest: QuestData, rel: Rel, st: Settings,
   onProgress?: (done: number, total: number) => void,
 ): SearchOutput {
-  return finishSearch([findCores(pool, all, stock, quest, rel, st, onProgress)], pool, all, stock, quest, st);
+  return finishSearch([findCores(pool, all, stock, quest, rel, st, onProgress)], pool, all, stock, quest, st, rel);
 }
 
 /** 보유 인연 예장 중 ATK가 가장 높은 것(주 딜러에게 끼운다고 본다) */
@@ -237,7 +241,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
     const as = assignments(slots);
     if (!as.length) return 0;
     /** 프렌드 자리를 f0로 놓고 계산한다. 클리어되면 조건(마술예장·예장 ATK)을 가장 덜어 낸 결과를 돌려준다. */
-    const attemptBase = (f0: number): { sim: SimResult; mc: MysticCode | null; atk: boolean } | null => {
+    const attemptBase = (f0: number): { sim: SimResult; mc: MysticCode | null; atk: boolean; lu: ActorCfg[] } | null => {
       const mk = (plus: number): ActorCfg[] => slots.map((s, i) => ({
         ...(i === f0 ? friendCfg(allByNo.get(s.no)!, s.role) : cfg(byNo.get(s.no)!, s.role, s.boost ? plus : 0)),
         bench: s.bench, swapOut: s.swapOut, main: s.boost,
@@ -249,15 +253,17 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
         if (!top.cleared) { noteFail(mk(0).map((x) => x.svt.name), top); return null; }
       }
       // 되는 편성이면 가장 가벼운 조건부터 찾는다: 첫 예장(보통 없음)·예장 ATK 없음
-      const first = run(mk(0), mcs[0]);
-      if (first.cleared) return { sim: first, mc: mcs[0], atk: false };
+      const lu0 = mk(0);
+      const first = run(lu0, mcs[0]);
+      if (first.cleared) return { sim: first, mc: mcs[0], atk: false, lu: lu0 };
       if (mcs.length === 1 && !plusAtk) { noteFail(mk(0).map((x) => x.svt.name), first); return null; }
       // 되는 것을 확인했으니 실제 조건을 찾는다: 마술예장만 → 예장 ATK만 → 둘 다
-      for (const m of mcs.slice(1)) { const r = run(mk(0), m); if (r.cleared) return { sim: r, mc: m, atk: false }; }
+      for (const m of mcs.slice(1)) { const r = run(lu0, m); if (r.cleared) return { sim: r, mc: m, atk: false, lu: lu0 }; }
       if (plusAtk) {
-        const r0 = run(mk(plusAtk), mcs[0]);
-        if (r0.cleared) return { sim: r0, mc: mcs[0], atk: true };
-        for (const m of mcs.slice(1)) { const r = run(mk(plusAtk), m); if (r.cleared) return { sim: r, mc: m, atk: true }; }
+        const lu1 = mk(plusAtk);
+        const r0 = run(lu1, mcs[0]);
+        if (r0.cleared) return { sim: r0, mc: mcs[0], atk: true, lu: lu1 };
+        for (const m of mcs.slice(1)) { const r = run(lu1, m); if (r.cleared) return { sim: r, mc: m, atk: true, lu: lu1 }; }
       }
       noteFail(mk(0).map((x) => x.svt.name), first);
       return null;
@@ -271,7 +277,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
       useCs = false;
       return withCs && { ...withCs, cs: true };
     };
-    const push = (f: number, r: { sim: SimResult; mc: MysticCode | null; atk: boolean; cs?: boolean }) => {
+    const push = (f: number, r: { sim: SimResult; mc: MysticCode | null; atk: boolean; cs?: boolean; lu: ActorCfg[] }) => {
       const own = slots.filter((_, i) => i !== f);
       const roles = new Map<number, 'dealer' | 'support'>(own.map((s) => [s.no, s.role]));
       (r.atk ? coresAtk : cores).push({
@@ -280,7 +286,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
         bench: new Set(own.filter((s) => s.bench).map((s) => s.no)), friendBench: f >= 0 && !!slots[f].bench,
         swapOut: slots.find((s) => s.swapOut)?.no,
         seq: slots.map((s, i) => ({ s, i })).filter((x) => !x.s.bench).map((x) => (x.i === f ? 'f' : String(x.s.no))),
-        u: unit,
+        u: unit, lu: r.lu,
       });
     };
     // 프렌드가 내 서번트와 조건이 다르면(시작 NP 예장) 프렌드 자리마다 따로 계산한다.
@@ -395,7 +401,7 @@ const tryLineup = (slots: Slot[], mcs: (MysticCode | null)[]): number => {
 }
 
 /** 2단계: 찾은 코어(여러 워커의 몫을 합친 것) 위에서 인연을 최적화해 결과를 만든다. */
-export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[], stock: CEStock[], quest: QuestData, st: Settings): SearchOutput {
+export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[], stock: CEStock[], quest: QuestData, st: Settings, rel?: Rel): SearchOutput {
   const byNo = new Map(pool.map((p) => [p.svt.no, p]));
   const allByNo = new Map(all.map((s) => [s.no, s]));
   const mcById = new Map([st.mc, ...(st.mcAuto ?? [])].filter((m): m is MysticCode => !!m).map((m) => [m.id, m]));
@@ -403,6 +409,7 @@ export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[
   const unpack = (c: PackedCore): Core => ({
     own: c.own.map((n) => byNo.get(n)!), friend: c.friend === null ? null : allByNo.get(c.friend)!, friendRole: c.friendRole, roles: new Map(c.roles), sim: c.sim,
     mc: c.mc === null ? null : mcById.get(c.mc) ?? null, cs: c.cs, bench: new Set(c.bench), friendBench: c.friendBench, swapOut: c.swapOut, seq: c.seq, u: c.u,
+    lu: c.lu.map(({ no, ...rest }) => ({ ...rest, svt: rest.friend ? allByNo.get(no)! : byNo.get(no)!.svt })),
   });
   // 단위 번호순으로 합치면 한 번에 찾았을 때와 순서가 같다(같은 단위 안의 순서는 그대로 둔다)
   const merge = (pick: (p: CorePart) => PackedCore[]) => parts.flatMap(pick).map(unpack).sort((a, b) => a.u - b.u);
@@ -443,6 +450,25 @@ export function finishSearch(parts: CorePart[], pool: PoolEntry[], all: Servant[
     for (const c of byCond.values()) {
       const r = rank({ ...st, friendCe: { no: c.no, mlb: true } });
       if (r[0] && (!results[0] || r[0].total > results[0].total)) { results = r; autoFriendCe = c.name; }
+    }
+  }
+  // 보여 줄 결과만, 없어도 클리어되는 스킬을 뺀다. 마술예장·령주 스킬이 하나도 남지 않으면 그 조건도 뗀다.
+  if (rel) {
+    const bySim = new Map<SimResult, Core>();
+    for (const c of [...cores, ...coresAtk]) if (!bySim.has(c.sim)) bySim.set(c.sim, c);
+    const done = new Map<SimResult, SimResult>();
+    for (const r of results) {
+      const core = bySim.get(r.sim);
+      if (!core) continue;
+      let t = done.get(r.sim);
+      if (!t) done.set(r.sim, (t = trimSkills(core.lu, quest, rel, { mc: core.mc?.skills, cardNp: st.cardNp, commandSpell: !!core.cs, score: st.score, friendScore: st.friendScore, roll: st.roll }, r.sim)));
+      r.sim = t;
+      r.turns = t.turns;
+      const ops = t.log.flatMap((x) => x.ops ?? []);
+      const usedCs = t.log.some((x) => x.skills.some((k) => k.skill === COMMAND_SPELL_NAME));
+      if (r.cs && !usedCs) r.cs = undefined;
+      const masterUses = ops.filter((o) => o[0] === 's' && o[1] === -1).length - (usedCs ? 1 : 0);
+      if (r.mc && !masterUses && !ops.some((o) => o[0] === 'x')) r.mc = undefined;
     }
   }
   const feasible = cores.length + coresAtk.length;
