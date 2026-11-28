@@ -254,8 +254,16 @@ export function transform(raw, now) {
     let np = null;
     if (s.noblePhantasms.length) np = compactNp(best(s.noblePhantasms));
     const passive = [];
+    // 필드에 있는 동안 아군의 버프 부여 성공률을 깎는 패시브(대상 특성 tv, 버프 종류 cs)
+    const aura = [];
     for (const p of s.classPassive) {
       for (const f of p.functions) {
+        if (/^pt/.test(f.funcTargetType) && f.funcTargetTeam !== 'enemy') {
+          for (const b of f.buffs || []) {
+            if (b.type !== 'downGrantstate' || !f.svals?.[0]?.Value) continue;
+            aura.push({ t: b.type, v: f.svals[0].Value, tv: ids(f.functvals), cs: ids(b.ckSelfIndv), other: /Other/.test(f.funcTargetType) || undefined });
+          }
+        }
         if (f.funcTargetType !== 'self') continue;
         const c = compactFn(f, 1);
         if (c && c.b) passive.push(c);
@@ -268,7 +276,7 @@ export function transform(raw, now) {
       atk: { 1: g[0], max: g[s.lvMax - 1], 100: g[99], 120: g[119] },
       // 레벨별 ATK(1~120). 레벨만 아는 데이터(Chaldea 백업)에서 정확한 ATK를 구하는 데 쓴다.
       growth: g.slice(0, 120),
-      skills, np, passive,
+      skills, np, passive, ...(aura.length ? { aura } : {}),
       face: s.extraAssets?.faces?.ascension?.['1'] || '',
     });
   }

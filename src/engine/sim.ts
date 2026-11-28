@@ -25,6 +25,8 @@ interface State {
   rel: Rel; roll: number; killed: number; broken: number;
   /** 마술예장 스킬을 쓰는 가상의 행동 주체(전투에는 참가하지 않는다) */
   master: Actor | null;
+  /** 버프 부여 성공률을 깎는 패시브를 적용하는가(전투 개시 때의 패시브 부여가 끝난 뒤 켠다) */
+  auraOn?: boolean;
   cardNp: number;
   /** 전투 중 추가된 필드 특성(보구·스킬의 필드 변경). turn은 남은 턴 */
   fieldAdd: { trait: number; turn: number }[];
@@ -173,10 +175,21 @@ function pickEnemy(s: State): Enemy | undefined {
   return alive(s).reduce<Enemy | undefined>((a, e) => (!a || e.bars[0] > a.bars[0] ? e : a), undefined);
 }
 
-/** 쓰는 쪽에 걸린 성공률 UP 중 이 효과의 버프에 해당하는 것의 합(강화 성공률 UP은 강화에만, 약화 성공률 UP은 약화에만) */
-function grantRate(user: Actor, fn: Fn): number {
+/**
+ * 쓰는 쪽의 성공률 보정 합(강화 성공률 UP은 강화에만, 약화 성공률 UP은 약화에만).
+ * 필드에 있는 아군의 패시브가 쓰는 쪽의 버프 부여 성공률을 깎는 경우(음수)도 여기에 들어간다.
+ */
+function grantRate(s: State, user: Actor, fn: Fn): number {
   if (!fn.b) return 0;
   let n = 0;
+  if (s.auraOn) {
+    for (const a of s.actors) for (const au of a.cfg.svt.aura ?? []) {
+      if (au.other && a === user) continue;
+      if (au.tv.length && !au.tv.some((t) => user.cfg.svt.traits.includes(t))) continue;
+      if (au.cs.length && !fn.b.some((d) => d.v?.some((x) => au.cs.includes(x)))) continue;
+      n -= au.v;
+    }
+  }
   for (const b of user.buffs) if (b.t === 'upGrantstate' && (!b.d.cs?.length || fn.b.some((d) => d.v?.some((x) => b.d.cs!.includes(x))))) n += b.val;
   return n;
 }
@@ -233,9 +246,10 @@ function applyFn(s: State, user: Actor, fn: Fn, lvIdx: number, ally: Actor | und
     allies = allies.filter((a) => has(actorTraits(a), a.buffs));
     enemies = enemies.filter((e) => has(enemyTraits(e), e.buffs));
   }
-  if (chance) {
-    const g = grantRate(user, fn);
-    allies = allies.filter((a) => sv.Rate! + g + receiveRate(a, fn) >= 1000);
+  // 확률 효과이거나, 쓰는 쪽의 버프 부여 성공률이 깎여 있으면 대상별로 확정인지 가린다
+  const g = fn.b && allies.length ? grantRate(s, user, fn) : 0;
+  if (chance || g < 0) {
+    allies = allies.filter((a) => (sv.Rate ?? 1000) + g + receiveRate(a, fn) >= 1000);
     if (!allies.length) return;
   }
   if (fn.t === 'gainMultiplyNp') { for (const a of allies) a.gauge = Math.min(30000, a.gauge + Math.floor((a.gauge * v) / 1000)); return; }
@@ -510,6 +524,8 @@ function skillCtx(front: ActorCfg[], quest: QuestData, mc: Skill[] | null | unde
     let f = svtFlags.get(c.svt);
     if (!f) svtFlags.set(c.svt, (f = flagsOf([...c.svt.skills.flatMap((sk) => sk.fn), ...(c.svt.np?.fn ?? []), ...c.svt.passive])));
     add(f);
+    // 성공률을 깎는 패시브가 있으면 성공률 UP 스킬이 의미를 가진다
+    if (c.svt.aura?.length) chancy = true;
   }
   if (mc?.length) {
     let f = mcFlags.get(mc);
@@ -550,7 +566,8 @@ function useful(s: State, r: SkillRef, target: Actor): boolean {
     let rec = fn.tg === 'self' ? [r.a] : fn.tg === 'ptOne' ? [target]
       : fn.tg === 'ptAll' || fn.tg === 'ptFull' ? s.actors
         : fn.tg === 'ptOther' || fn.tg === 'ptOtherFull' ? s.actors.filter((a) => a !== r.a) : [];
-    if (chance) { const g = grantRate(r.a, fn); rec = rec.filter((a) => rate! + g + receiveRate(a, fn) >= 1000); }
+    const g = grantRate(s, r.a, fn);
+    if (chance || g < 0) rec = rec.filter((a) => (rate ?? 1000) + g + receiveRate(a, fn) >= 1000);
     if (!rec.length) continue;
     for (const d of fn.b) {
       if (ANY_BUFF.has(d.t)) return true;
@@ -848,6 +865,8 @@ function initState(front: ActorCfg[], quest: QuestData, rel: Rel, opt: SimExtra 
   for (const a of [...s.actors, ...s.bench]) {
     if (a.cfg.power) applyFn(s, a, { t: 'addStateShort', tg: 'self', sv: { Rate: 1000, Turn: -1, Count: -1, Value: a.cfg.power }, b: [{ t: 'upDamage' }] }, 0, a);
   }
+  // 버프 부여 성공률을 깎는 패시브는 전투가 시작된 뒤에 쓰는 스킬·보구부터 적용한다(위의 패시브 부여에는 걸지 않는다)
+  s.auraOn = true;
   // 클래스 스코어: 그 클래스 서번트에게 전투 내내 걸리는 카드 위력·보구 위력 UP
   for (const a of [...s.actors, ...s.bench]) {
     const sc = (a.cfg.npc ? undefined : a.cfg.friend ? opt.friendScore : opt.score)?.[a.cfg.svt.cls];

@@ -40,6 +40,11 @@ export interface Servant {
   /** 레벨별 ATK(색인 0 = Lv1). 예전 데이터에는 없을 수 있다. */
   growth?: number[];
   skills: Skill[]; np: NP | null; passive: Fn[]; face: string;
+  /**
+   * 필드에 있는 동안 아군에게 걸리는 패시브 중 버프 부여 성공률을 깎는 것.
+   * tv 특성을 가진 아군(비어 있으면 전원, other면 자신 제외)이 cs 종류의 버프를 걸 때 성공률이 v(천분율)만큼 내려간다.
+   */
+  aura?: { t: 'downGrantstate'; v: number; tv: number[]; cs: number[]; other?: boolean }[];
   /** 영기재림 단계(0~4)별 특성. 단계에 따라 특성이 달라지는 서번트에만 있다. traits는 4단계 기준. */
   asc?: number[][];
 }
